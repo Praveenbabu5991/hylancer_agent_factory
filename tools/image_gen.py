@@ -130,13 +130,16 @@ def generate_post_image(
     occasion: str = "",
     reference_images: str = "",
     company_overview: str = "",
-    greeting_text: str = ""
+    greeting_text: str = "",
+    headline_text: str = "",
+    subtext: str = "",
+    cta_text: str = ""
 ) -> dict:
     """
     Generate a professional social media post image using Gemini.
     
     Args:
-        prompt: Description of the image to generate
+        prompt: Description of the image/visual concept
         brand_name: Name of the brand/company
         brand_colors: Comma-separated brand colors (hex codes)
         style: Visual style (creative, professional, playful, minimal, bold)
@@ -146,7 +149,10 @@ def generate_post_image(
         occasion: Special occasion/event theme
         reference_images: Comma-separated paths to reference images
         company_overview: Description of what the company does
-        greeting_text: Event greeting text (e.g., "Happy Valentine's Day!")
+        greeting_text: Event greeting (e.g., "Happy Valentine's Day!")
+        headline_text: Main headline text for the image
+        subtext: Supporting text/tagline
+        cta_text: Call-to-action text
         
     Returns:
         Dictionary with image path and generation details
@@ -212,9 +218,34 @@ REFERENCE IMAGES PROVIDED - Match this visual style:
         # Build the generation prompt with strong color emphasis
         primary_color = colors_list[0] if colors_list else "#000000"
         
+        # Build explicit text section - only the actual text, no labels
+        text_elements = []
+        if greeting_text:
+            text_elements.append(f'At the TOP in large decorative text: "{greeting_text}"')
+        if headline_text:
+            text_elements.append(f'Main headline (prominent, eye-catching): "{headline_text}"')
+        if subtext:
+            text_elements.append(f'Supporting text (smaller): "{subtext}"')
+        if cta_text:
+            text_elements.append(f'Call-to-action (button or highlighted): "{cta_text}"')
+        
+        text_section = ""
+        if text_elements:
+            text_section = f"""
+EXACT TEXT TO DISPLAY ON THE IMAGE:
+{chr(10).join(f"• {t}" for t in text_elements)}
+
+⚠️ CRITICAL TEXT RULES:
+- Display ONLY the text inside the quotation marks above
+- DO NOT write words like "HEADLINE", "GREETING", "SUBTEXT", "CTA", "TEXT" on the image
+- The viewer should see "{greeting_text or headline_text}" NOT "HEADLINE: {headline_text}"
+- Make all text legible with good contrast against background
+- Use elegant typography that matches the {style} style
+"""
+        
         full_prompt = f"""Create a premium Instagram post image for {brand_name or 'a brand'}.
 
-CONTENT DESCRIPTION: {prompt}
+VISUAL CONCEPT: {prompt}
 
 BRAND IDENTITY:
 - Brand: {brand_name or 'Brand'}
@@ -228,34 +259,24 @@ VISUAL STYLE: {style_desc}
 
 CRITICAL COLOR REQUIREMENT:
 The image MUST prominently feature the brand's primary color ({primary_color}).
-This means: 
-- Use {primary_color} in the background gradient/overlay OR
-- Use {primary_color} in prominent visual elements OR
-- Ensure the overall color mood reflects {primary_color}
+- Use {primary_color} in background gradient, overlay, or prominent elements
 - The brand colors should be immediately recognizable
+- Overall mood should reflect the brand identity
 
-TEXT ON IMAGE (MUST appear clearly and be readable):
-{f'MAIN TEXT AT TOP: {greeting_text}' if greeting_text else ''}
-Extract any headline, tagline, subtext, and CTA text from the content description above.
-
-CRITICAL - TEXT FORMATTING RULES:
-- NEVER put labels like "HEADLINE:", "GREETING:", "SUBTEXT:", "CTA:" on the image
-- Only put the ACTUAL text content that should be read by viewers
-- For example, if the brief says 'HEADLINE: "Innovate Today"' → put "Innovate Today" on the image, NOT the word "HEADLINE"
-- All text should be legible, well-placed, and contrast with the background
+{text_section}
 
 {ref_context if has_refs else '''
-VISUAL APPROACH: Professional photography with real, diverse people.
-Natural lighting, authentic expressions, premium magazine quality.'''}
+VISUAL APPROACH: Professional photography or high-quality graphics.
+Premium, polished aesthetic suitable for brand social media.'''}
 
-TECHNICAL SPECIFICATIONS:
+TECHNICAL SPECS:
 - Aspect ratio: 4:5 (Instagram optimal)
-- Ultra high resolution and quality
-- All text must be sharp and readable
-- Brand colors must be prominently visible
-{f"- Include {brand_name} logo: Bottom-right corner, subtle but clear" if logo_path else ""}
+- Ultra high resolution
+- Sharp, readable text
+- Brand colors prominent
+{f"- Include {brand_name} logo: subtle, bottom-right corner" if logo_path else ""}
 
-Create a scroll-stopping, on-brand, magazine-quality image that immediately evokes the brand's identity through its color palette."""
+Create a scroll-stopping, magazine-quality image."""
 
         # Prepare content with images
         contents = [full_prompt]
