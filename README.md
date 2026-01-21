@@ -1,101 +1,140 @@
-# Content Studio Agent
+# Content Studio Agent 🎨
 
-A multi-agent social media content creation platform powered by Google ADK with a custom chat-driven UI.
+A **multi-agent social media content creation platform** powered by Google ADK (Agent Development Kit) and Gemini.
 
 ## Features
 
-- **Image Post Generation**: Create stunning Instagram posts with AI-generated images
-- **Caption & Hashtag Creation**: Generate engaging captions with trending hashtags
-- **Campaign Planning**: Plan content calendars for weeks/months ahead
-- **Image Editing**: Modify generated images based on feedback
-- **Human-in-the-Loop**: Conversational workflow with approval steps
+- 🤖 **6 Specialized AI Agents** working together:
+  - **Content Agent** - Suggests post ideas based on calendar events & company context
+  - **Poster Agent** - Creates stunning visual posts with brand integration
+  - **Caption Agent** - Writes engaging captions & hashtags
+  - **Edit Agent** - Modifies and improves existing images
+  - **Animation Agent** - Transforms static images into Reels/videos
+  - **Campaign Agent** - Plans multi-week content campaigns
 
-## Architecture
+- 🎯 **Smart Orchestration** - Root agent coordinates workflow with proper context handoffs
+- 🎨 **Brand Integration** - Logo, colors, reference images, and tone consistency
+- 📅 **Calendar-Aware** - Suggests content based on upcoming events and festivals
+- 🖼️ **AI Image Generation** - Creates professional Instagram-ready visuals
+- ✍️ **Caption Generation** - Short, crisp captions optimized for engagement
 
-The platform uses an orchestrator agent that coordinates four specialized sub-agents:
-
-1. **ImagePostAgent**: Generates Instagram images using logo, palette, and theme
-2. **CaptionAgent**: Creates captions with hashtags using web search + calendar context
-3. **EditPostAgent**: Modifies existing images based on user feedback
-4. **CampaignPlannerAgent**: Plans content calendars for weeks/months
-
-## Quick Start
-
-### Prerequisites
+## Prerequisites
 
 - Python 3.10+
-- Google/Gemini API Key
+- Google API Key (for Gemini)
 
-### Installation
+## Installation
 
-1. Clone and enter the directory:
-```bash
-cd content-studio-agent
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/Praveenbabu5991/hylancer_agent_factory.git
+   cd hylancer_agent_factory
+   ```
+
+2. **Create virtual environment:**
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
+
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Set up environment variables:**
+   ```bash
+   cp env.example .env
+   # Edit .env and add your GOOGLE_API_KEY
+   ```
+
+## Environment Variables
+
+Create a `.env` file with:
+
+```env
+GOOGLE_API_KEY=your_google_api_key_here
+DEFAULT_MODEL=gemini-2.5-flash
 ```
 
-2. Create virtual environment and install:
+## Running the Application
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+# Using Python directly
+PORT=8080 python -m app.fast_api_app
+
+# Or using Make
+make run
 ```
 
-3. Set up environment variables:
-```bash
-cp .env.example .env
-# Edit .env and add your GEMINI_API_KEY
-```
-
-### Running the Application
-
-**Option 1: Custom UI (Recommended)**
-```bash
-make dev
-# or
-python -m app.fast_api_app
-```
-Open http://localhost:5000 in your browser.
-
-**Option 2: ADK Web UI (Development)**
-```bash
-make adk-web
-# or
-adk web
-```
-Open http://localhost:8000 in your browser.
+Then open http://localhost:8080 in your browser.
 
 ## Usage
 
-1. Start a conversation: "Create a post for my company"
-2. Upload your logo and select brand colors
-3. Describe the content theme
-4. Review generated images
-5. Request captions and hashtags
-6. Make modifications as needed
-7. Download your final posts
+1. **Brand Setup** - Configure your brand (name, logo, colors, reference images)
+2. **Choose Mode** - Single Post or Campaign
+3. **Get Ideas** - AI suggests relevant content ideas
+4. **Generate** - Create professional visuals with your brand identity
+5. **Animate** - Optionally convert to video/Reels
+6. **Caption** - Get engaging captions and hashtags
 
 ## Project Structure
 
 ```
 content-studio-agent/
 ├── app/
-│   ├── agent.py              # Orchestrator + sub-agents
-│   └── fast_api_app.py       # Custom FastAPI server
+│   ├── agent.py          # Multi-agent definitions & orchestrator
+│   └── fast_api_app.py   # FastAPI server
 ├── tools/
-│   ├── image_gen.py          # Image generation tool
-│   ├── web_search.py         # Web search tool
-│   ├── content.py            # Caption & hashtag tools
-│   ├── calendar.py           # Festival/calendar tool
-│   └── instagram.py          # Instagram scraper tool
+│   ├── calendar.py       # Calendar & events tools
+│   ├── content.py        # Caption & hashtag tools
+│   ├── image_gen.py      # Image generation & animation
+│   ├── instagram.py      # Profile scraping tools
+│   └── web_search.py     # Web search & trends
 ├── memory/
-│   └── store.py              # Session memory
-├── static/                   # Frontend assets
-├── templates/                # HTML templates
-├── generated/                # Output images
-└── uploads/                  # User uploads
+│   └── store.py          # Session memory management
+├── static/
+│   ├── css/style.css     # UI styles
+│   ├── js/app.js         # Frontend JavaScript
+│   └── presets/          # Brand presets & assets
+├── templates/
+│   └── index.html        # Main UI template
+├── requirements.txt
+├── pyproject.toml
+└── README.md
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 ContentStudioManager                         │
+│                    (Orchestrator)                            │
+│  • Collects brand info                                       │
+│  • Routes to appropriate agent                               │
+│  • Passes context during handoffs                            │
+└─────────────────────────────────────────────────────────────┘
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        │                     │                     │
+        ▼                     ▼                     ▼
+┌───────────────┐   ┌───────────────┐   ┌───────────────┐
+│   Idea        │   │   Image       │   │   Campaign    │
+│   Suggestion  │   │   Post        │   │   Planner     │
+│   Agent       │   │   Agent       │   │   Agent       │
+└───────────────┘   └───────────────┘   └───────────────┘
+        │                     │                     │
+        ▼                     ▼                     ▼
+┌───────────────┐   ┌───────────────┐   ┌───────────────┐
+│   Caption     │   │   Animation   │   │   Edit        │
+│   Agent       │   │   Agent       │   │   Agent       │
+└───────────────┘   └───────────────┘   └───────────────┘
 ```
 
 ## License
 
-MIT License
-# hylancer_agent_factory
+MIT
+
+## Contributing
+
+Pull requests are welcome! For major changes, please open an issue first.
