@@ -89,7 +89,7 @@ body {
 /* App Container - Split Screen */
 .app-container {
     display: grid;
-    grid-template-columns: 480px 1fr;
+    grid-template-columns: 580px 1fr;
     height: 100vh;
 }
 
