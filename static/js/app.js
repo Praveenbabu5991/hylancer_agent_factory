@@ -333,7 +333,15 @@ class ContentStudioApp {
                 session_id: this.sessionId,
                 created: Date.now()
             }));
-            localStorage.removeItem('content_studio_messages'); // Clear old messages for new session
+            
+            // Clear old data for new session - start fresh
+            localStorage.removeItem('content_studio_messages');
+            localStorage.removeItem('content_studio_images');
+            
+            // Also clear the gallery UI for the new session
+            this.generatedImages = [];
+            this.contentGrid.innerHTML = '';
+            this.emptyState.hidden = false;
             
         } catch (error) {
             console.error('Session init error:', error);

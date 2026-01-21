@@ -265,8 +265,17 @@ The image MUST prominently feature the brand's primary color ({primary_color}).
 
 {text_section}
 
-{ref_context if has_refs else '''
-VISUAL APPROACH: Professional photography or high-quality graphics.
+{ref_context if has_refs else f'''
+VISUAL APPROACH - NO REFERENCE IMAGES PROVIDED:
+Since no reference images are given, create a scene featuring REAL HUMANS:
+- Include realistic, diverse people as customers/clients relevant to the {industry or 'business'} industry
+- Show authentic human interaction with the brand's product/service
+- People should look natural, engaged, and genuine (not stock photo-like)
+- Match demographics to the target audience based on: {company_overview or 'the brand'}
+- Examples: travelers enjoying destinations, professionals using tech, customers experiencing service
+- The humans should feel like real customers, not models
+
+IMPORTANT: Do NOT use generic stock photo poses. Show genuine human moments.
 Premium, polished aesthetic suitable for brand social media.'''}
 
 TECHNICAL SPECS:
