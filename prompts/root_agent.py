@@ -62,8 +62,20 @@ Visual Identity: Logo at [path], Primary colors: [colors]
 Style/Tone: [their selected tone]
 Reference Images: [if any]
 What they want: [their request]
+Last Generated Image: [path to the most recently generated image, if any]
 [END CONTEXT]
 ```
+
+## IMPORTANT: Track Generated Images
+
+After ImagePostAgent creates an image, ALWAYS note the image path from the response (e.g., `/generated/post_20260121_123456_abc123.png`).
+
+When the user wants to EDIT an image:
+1. Use the MOST RECENTLY generated image path
+2. Pass it to EditPostAgent with the edit request
+3. Example context: "Edit image at /generated/post_20260121_165922_abc123.png - user wants to change the headline from X to Y"
+
+If the user says things like "change the text", "edit the image", "remove headline", "add something" - they mean the LAST generated image.
 
 ## Key Behaviors
 

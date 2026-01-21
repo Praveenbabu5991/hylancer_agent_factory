@@ -235,9 +235,14 @@ This means:
 - The brand colors should be immediately recognizable
 
 TEXT ON IMAGE (MUST appear clearly and be readable):
-{f'GREETING (large, at top): "{greeting_text}"' if greeting_text else ''}
-Include ALL text elements from the prompt (headline, subtext, CTA).
-Text should contrast well with the background.
+{f'MAIN TEXT AT TOP: {greeting_text}' if greeting_text else ''}
+Extract any headline, tagline, subtext, and CTA text from the content description above.
+
+CRITICAL - TEXT FORMATTING RULES:
+- NEVER put labels like "HEADLINE:", "GREETING:", "SUBTEXT:", "CTA:" on the image
+- Only put the ACTUAL text content that should be read by viewers
+- For example, if the brief says 'HEADLINE: "Innovate Today"' → put "Innovate Today" on the image, NOT the word "HEADLINE"
+- All text should be legible, well-placed, and contrast with the background
 
 {ref_context if has_refs else '''
 VISUAL APPROACH: Professional photography with real, diverse people.

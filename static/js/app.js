@@ -380,6 +380,15 @@ class ContentStudioApp {
         }
     }
     
+    // Get the most recently generated image path (for editing context)
+    getLastGeneratedImage() {
+        if (this.generatedImages.length > 0) {
+            // Return the last (most recent) image
+            return this.generatedImages[this.generatedImages.length - 1];
+        }
+        return null;
+    }
+    
     // Clear session and start fresh
     clearSession() {
         localStorage.removeItem('content_studio_session');
@@ -1062,7 +1071,8 @@ class ContentStudioApp {
                     user_id: this.userId,
                     session_id: this.sessionId,
                     attachments: attachments,
-                    num_images: this.brandConfig.numImages
+                    num_images: this.brandConfig.numImages,
+                    last_generated_image: this.getLastGeneratedImage()
                 })
             });
             

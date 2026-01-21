@@ -165,6 +165,7 @@ class ChatRequest(BaseModel):
     user_id: Optional[str] = "default_user"
     session_id: Optional[str] = None
     attachments: Optional[list[dict]] = None
+    last_generated_image: Optional[str] = None  # For edit context
     
     @field_validator('message')
     @classmethod
@@ -418,6 +419,10 @@ async def chat_stream(request: ChatRequest):
     
     # Build message with explicit paths for the agent
     message_text = request.message
+    
+    # Add last generated image context for editing operations
+    if request.last_generated_image:
+        message_text = f"{message_text}\n\n[LAST GENERATED IMAGE: {request.last_generated_image}]"
     
     if request.attachments:
         attachment_context = "\n\n[BRAND ASSETS PROVIDED - USE THESE FOR IMAGE GENERATION:]"

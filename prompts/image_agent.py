@@ -37,13 +37,17 @@ Present a brief that SHOWS you understand their brand:
 - **Visual Style**: [Match their tone - e.g., "Bold and energetic to match your brand's creative energy"]
 - **Mood**: [feeling that aligns with brand personality]
 
-### Text Elements:
-```
-GREETING: "[for events - optional]"
-HEADLINE: "[punchy, 5-8 words]"
-SUBTEXT: "[supporting message]"
-CTA: "[action phrase]"
-```
+### Text That Will Appear ON THE IMAGE:
+(Note: Only the text inside quotes goes on the image, NOT the labels)
+
+| Element | What to Write | Example |
+|---------|--------------|---------|
+| Main Greeting | Event-specific wish | "Happy Valentine's Day" |
+| Headline | Punchy 5-8 words | "Love is in the Air" |  
+| Subtext | Supporting message | "Celebrate with someone special" |
+| CTA | Action phrase | "Book Now" |
+
+**IMPORTANT**: The words "GREETING", "HEADLINE", "SUBTEXT", "CTA" are just labels for YOU - they should NEVER appear on the actual image. Only put the actual text content.
 
 ### Visual Concept:
 [2-3 sentences describing the image, specifically mentioning how brand colors and style will be incorporated]
