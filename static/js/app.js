@@ -1312,10 +1312,11 @@ class ContentStudioApp {
             // Remove backticks around image paths first
             .replace(/`((?:\/)?generated\/[^\s\`]+\.png)`/g, '$1');
         
-        // Only convert paths that aren't already in HTML tags (not preceded by href=" or data-image=")
-        // Use a more specific pattern that only matches standalone paths
-        formatted = formatted.replace(/(?<!["\=])(?:\/)?generated\/(post_[a-zA-Z0-9_]+\.png)/g, 
-            '<a href="/generated/$1" class="image-link" data-image="/generated/$1">📷 View Image</a>');
+        // Replace image paths with clickable links - handle all formats
+        // Match: /generated/xxx.png or generated/xxx.png (not already in href or data-image)
+        formatted = formatted.replace(/(?<!["\=\/])(?:\/)?generated\/([a-zA-Z0-9_-]+\.png)/g, (match, filename) => {
+            return `<a href="/generated/${filename}" class="image-link" data-image="/generated/${filename}">📷 View Image</a>`;
+        });
         
         // Then process other formatting
         return formatted
@@ -1965,7 +1966,9 @@ class ContentStudioApp {
             // Fallback: Check for generated images without caption association
             // Multiple patterns to catch different formats
             const patterns = [
-                /\*\*Image:\*\*\s*(\/generated\/[^\s\n]+\.png)/gi,  // **Image:** /generated/xxx.png
+                /\*\*(?:📸\s*)?Image:\*\*\s*(\/generated\/[^\s\n]+\.png)/gi,  // **📸 Image:** or **Image:** /generated/xxx.png
+                /📸\s*Image:\s*(\/generated\/[^\s\n]+\.png)/gi,  // 📸 Image: /generated/xxx.png
+                /Image:\s*(\/generated\/[^\s\n]+\.png)/gi,  // Image: /generated/xxx.png
                 /\/generated\/post_[a-zA-Z0-9_]+\.png/g,  // /generated/post_xxx.png (specific)
                 /\/generated\/[a-zA-Z0-9_-]+\.png/g,  // /generated/xxx.png (general)
                 /generated\/[a-zA-Z0-9_-]+\.png/g,    // Without leading slash
@@ -2056,9 +2059,9 @@ class ContentStudioApp {
             });
         }
         
-        // Pattern 2: Simple image + caption format
+        // Pattern 2: Simple image + caption format (handles emoji variants)
         if (pairs.length === 0) {
-            const simplePattern = /(?:(?:Here's|Generated|Created|Image)[^\n]*?(\/generated\/[^\s\)\"\'\`<>]+\.png))[\s\S]*?(?:Caption[:\s]*\n?([\s\S]*?)(?=\n\n|Hashtag|#️⃣|$))?/gi;
+            const simplePattern = /(?:(?:Here's|Generated|Created|📸\s*Image|Image)[^\n]*?(\/generated\/[^\s\)\"\'\`<>]+\.png))[\s\S]*?(?:Caption[:\s]*\n?([\s\S]*?)(?=\n\n|Hashtag|#️⃣|$))?/gi;
             
             while ((match = simplePattern.exec(text)) !== null) {
                 const imagePath = match[1].startsWith('/') ? match[1] : '/' + match[1];
