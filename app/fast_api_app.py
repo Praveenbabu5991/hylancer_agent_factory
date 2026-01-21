@@ -1,28 +1,36 @@
 """
-Content Studio Agent - Custom FastAPI Server
+Content Studio Agent - FastAPI Server
 
-Provides a custom web interface with:
+Provides a secure web interface with:
 - Split-screen UI (chat left, generations right)
-- File upload for logos
+- File upload with validation
 - Streaming chat responses
-- Image serving for generated content
+- Session management with persistence
+- Rate limiting
 """
 
 import os
 import uuid
 import json
 import asyncio
+import time
 from pathlib import Path
 from typing import Optional
+from datetime import datetime, timedelta
+from collections import defaultdict
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
-from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+from pydantic import BaseModel, field_validator
 from dotenv import load_dotenv
+from PIL import Image
+import io
 
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -31,37 +39,106 @@ from google.genai import types
 # Load environment
 load_dotenv()
 
-# Import our agent
-from app.agent import root_agent
+# Import configuration
+from config.settings import (
+    HOST, PORT, DEBUG, ALLOWED_ORIGINS,
+    UPLOAD_DIR, GENERATED_DIR, STATIC_DIR, TEMPLATES_DIR,
+    MAX_UPLOAD_SIZE_BYTES, ALLOWED_IMAGE_TYPES, MAX_IMAGE_DIMENSION,
+    RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW,
+    SESSION_TIMEOUT_HOURS,
+)
+
+# Import the root agent
+from agents.root_agent import root_agent
 
 # Import tools for direct use
 from tools.image_gen import extract_brand_colors
 
-# Base paths
-BASE_DIR = Path(__file__).parent.parent
-UPLOAD_DIR = BASE_DIR / "uploads"
-GENERATED_DIR = BASE_DIR / "generated"
-STATIC_DIR = BASE_DIR / "static"
-TEMPLATES_DIR = BASE_DIR / "templates"
+# Import memory store
+from memory.store import get_memory_store
 
-# Ensure directories exist
-UPLOAD_DIR.mkdir(exist_ok=True)
-GENERATED_DIR.mkdir(exist_ok=True)
 
+# =============================================================================
+# Rate Limiting Middleware
+# =============================================================================
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Simple in-memory rate limiting middleware."""
+    
+    # Paths to exclude from rate limiting (static files, images, etc.)
+    EXCLUDED_PATHS = ['/static/', '/generated/', '/uploads/', '/favicon.ico', '/health']
+    
+    def __init__(self, app, requests_per_minute: int = 60):
+        super().__init__(app)
+        self.requests_per_minute = requests_per_minute
+        self.requests = defaultdict(list)
+    
+    async def dispatch(self, request: Request, call_next):
+        # Skip rate limiting for static files and health checks
+        path = request.url.path
+        if any(path.startswith(excluded) for excluded in self.EXCLUDED_PATHS):
+            return await call_next(request)
+        
+        # Get client IP
+        client_ip = request.client.host if request.client else "unknown"
+        
+        # Clean old requests
+        current_time = time.time()
+        window_start = current_time - 60
+        self.requests[client_ip] = [t for t in self.requests[client_ip] if t > window_start]
+        
+        # Check rate limit
+        if len(self.requests[client_ip]) >= self.requests_per_minute:
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={"detail": "Too many requests. Please wait a moment and try again."}
+            )
+        
+        # Record request
+        self.requests[client_ip].append(current_time)
+        
+        return await call_next(request)
+
+
+# =============================================================================
 # Initialize FastAPI
+# =============================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan handler for startup and shutdown events."""
+    # Startup
+    try:
+        store = get_memory_store()
+        deleted = store.cleanup_old_sessions(SESSION_TIMEOUT_HOURS)
+        if deleted > 0:
+            print(f"🧹 Cleaned up {deleted} old sessions")
+    except Exception as e:
+        print(f"⚠️ Session cleanup error: {e}")
+    
+    yield
+    
+    # Shutdown (cleanup if needed)
+    print("👋 Content Studio Agent shutting down...")
+
+
 app = FastAPI(
     title="Content Studio Agent",
     description="Multi-agent social media content creation platform",
-    version="0.1.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
-# CORS
+# Add rate limiting
+app.add_middleware(RateLimitMiddleware, requests_per_minute=RATE_LIMIT_REQUESTS)
+
+# CORS - Use configured origins instead of wildcard
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # Static files and templates
@@ -79,12 +156,24 @@ runner = Runner(
 )
 
 
-# Request/Response models
+# =============================================================================
+# Request/Response Models with Validation
+# =============================================================================
+
 class ChatRequest(BaseModel):
     message: str
     user_id: Optional[str] = "default_user"
     session_id: Optional[str] = None
-    attachments: Optional[list[dict]] = None  # [{type: "logo", path: "...", colors: {...}}]
+    attachments: Optional[list[dict]] = None
+    
+    @field_validator('message')
+    @classmethod
+    def message_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError('Message cannot be empty')
+        if len(v) > 10000:
+            raise ValueError('Message too long (max 10000 characters)')
+        return v.strip()
 
 
 class ChatResponse(BaseModel):
@@ -94,25 +183,59 @@ class ChatResponse(BaseModel):
     generated_images: Optional[list[dict]] = None
 
 
-# Active WebSocket connections
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: dict[str, WebSocket] = {}
+# =============================================================================
+# File Validation Helpers
+# =============================================================================
 
-    async def connect(self, websocket: WebSocket, session_id: str):
-        await websocket.accept()
-        self.active_connections[session_id] = websocket
+def validate_image_file(file: UploadFile) -> None:
+    """Validate uploaded image file."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
+    # Check content type
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid file type. Allowed: PNG, JPEG, GIF, WebP"
+        )
+    
+    # Check file extension
+    ext = Path(file.filename).suffix.lower()
+    if ext not in {'.png', '.jpg', '.jpeg', '.gif', '.webp'}:
+        raise HTTPException(status_code=400, detail="Invalid file extension")
 
-    def disconnect(self, session_id: str):
-        if session_id in self.active_connections:
-            del self.active_connections[session_id]
 
-    async def send_message(self, session_id: str, message: dict):
-        if session_id in self.active_connections:
-            await self.active_connections[session_id].send_json(message)
+async def validate_image_content(content: bytes) -> None:
+    """Validate image content and dimensions."""
+    if len(content) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Maximum size: {MAX_UPLOAD_SIZE_BYTES // (1024*1024)}MB"
+        )
+    
+    # Validate it's actually an image and check dimensions
+    try:
+        image = Image.open(io.BytesIO(content))
+        width, height = image.size
+        if width > MAX_IMAGE_DIMENSION or height > MAX_IMAGE_DIMENSION:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Image too large. Maximum dimension: {MAX_IMAGE_DIMENSION}px"
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid or corrupted image file")
 
 
-manager = ConnectionManager()
+def sanitize_filename(filename: str) -> str:
+    """Sanitize filename to prevent path traversal."""
+    # Remove any path components
+    filename = Path(filename).name
+    # Remove any special characters except . and -
+    import re
+    filename = re.sub(r'[^\w\-.]', '_', filename)
+    return filename
 
 
 # =============================================================================
@@ -128,7 +251,12 @@ async def index(request: Request):
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    return {"status": "ok", "agent": "Content Studio Manager"}
+    return {
+        "status": "ok",
+        "agent": "Content Studio Manager",
+        "version": "1.0.0",
+        "timestamp": datetime.now().isoformat()
+    }
 
 
 @app.post("/upload-logo")
@@ -136,25 +264,19 @@ async def upload_logo(file: UploadFile = File(...)):
     """
     Upload a logo file and extract brand colors.
     
-    Returns:
-        - filename: Saved filename
-        - colors: Extracted brand colors
+    Validates file type, size, and dimensions.
     """
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file provided")
+    validate_image_file(file)
     
-    # Validate file type
-    allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
-    if file.content_type not in allowed_types:
-        raise HTTPException(status_code=400, detail="Invalid file type. Use PNG, JPEG, GIF, or WebP.")
+    content = await file.read()
+    await validate_image_content(content)
     
     # Generate unique filename
-    ext = Path(file.filename).suffix
+    ext = Path(file.filename).suffix.lower()
     unique_filename = f"{uuid.uuid4()}{ext}"
     filepath = UPLOAD_DIR / unique_filename
     
     # Save file
-    content = await file.read()
     with open(filepath, "wb") as f:
         f.write(content)
     
@@ -175,26 +297,19 @@ async def upload_reference(file: UploadFile = File(...)):
     """
     Upload a reference image for style inspiration.
     
-    Returns:
-        - filename: Saved filename
-        - path: URL path to access the image
-        - full_path: Full filesystem path for the agent to use
+    Validates file type, size, and dimensions.
     """
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file provided")
+    validate_image_file(file)
     
-    # Validate file type
-    allowed_types = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
-    if file.content_type not in allowed_types:
-        raise HTTPException(status_code=400, detail="Invalid file type. Use PNG, JPEG, GIF, or WebP.")
+    content = await file.read()
+    await validate_image_content(content)
     
     # Generate unique filename with 'ref_' prefix
-    ext = Path(file.filename).suffix
+    ext = Path(file.filename).suffix.lower()
     unique_filename = f"ref_{uuid.uuid4()}{ext}"
     filepath = UPLOAD_DIR / unique_filename
     
     # Save file
-    content = await file.read()
     with open(filepath, "wb") as f:
         f.write(content)
     
@@ -262,7 +377,6 @@ async def chat(request: ChatRequest):
                     response_text += part.text
     
     # Check for generated images in response
-    # Parse response for image paths
     import re
     image_pattern = r'/generated/[^\s\)\"\']+\.png'
     found_images = re.findall(image_pattern, response_text)
@@ -304,15 +418,12 @@ async def chat_stream(request: ChatRequest):
     
     # Build message with explicit paths for the agent
     message_text = request.message
-    logo_full_path = None
-    reference_image_paths = []
     
     if request.attachments:
         attachment_context = "\n\n[BRAND ASSETS PROVIDED - USE THESE FOR IMAGE GENERATION:]"
         for att in request.attachments:
             if att.get("type") == "logo":
                 attachment_context += f"\n📷 LOGO_PATH: {att.get('full_path', att.get('path'))}"
-                logo_full_path = att.get('full_path')
                 if att.get("colors"):
                     colors = att["colors"]
                     attachment_context += f"\n🎨 BRAND_COLORS: {colors.get('dominant')}"
@@ -321,12 +432,10 @@ async def chat_stream(request: ChatRequest):
             elif att.get("type") == "reference_images":
                 ref_paths = att.get("paths", [])
                 if ref_paths:
-                    reference_image_paths = ref_paths
                     attachment_context += f"\n🖼️ REFERENCE_IMAGES: {','.join(ref_paths)}"
-                    attachment_context += f"\n   (IMPORTANT: Pass these exact paths to reference_images parameter in generate_post_image)"
-                    print(f"📸 Reference images being sent to agent: {ref_paths}")
+            elif att.get("type") == "company_overview":
+                attachment_context += f"\n📋 COMPANY_OVERVIEW: {att.get('content', '')}"
         message_text = message_text + attachment_context
-        print(f"📝 Full message to agent:\n{message_text[:500]}...")
     
     user_message = types.Content(
         role="user",
@@ -337,15 +446,18 @@ async def chat_stream(request: ChatRequest):
         # Send session ID first
         yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
         
-        async for event in runner.run_async(
-            user_id=request.user_id,
-            session_id=session_id,
-            new_message=user_message
-        ):
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if hasattr(part, 'text') and part.text:
-                        yield f"data: {json.dumps({'type': 'text', 'content': part.text})}\n\n"
+        try:
+            async for event in runner.run_async(
+                user_id=request.user_id,
+                session_id=session_id,
+                new_message=user_message
+            ):
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            yield f"data: {json.dumps({'type': 'text', 'content': part.text})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'An error occurred. Please try again.'})}\n\n"
         
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
     
@@ -355,72 +467,9 @@ async def chat_stream(request: ChatRequest):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
         }
     )
-
-
-@app.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    """
-    WebSocket endpoint for real-time bidirectional chat.
-    """
-    await manager.connect(websocket, session_id)
-    user_id = "default_user"
-    
-    # Ensure session exists
-    session = await session_service.get_session(
-        app_name="content_studio",
-        user_id=user_id,
-        session_id=session_id
-    )
-    if not session:
-        await session_service.create_session(
-            app_name="content_studio",
-            user_id=user_id,
-            session_id=session_id
-        )
-    
-    try:
-        while True:
-            data = await websocket.receive_json()
-            message = data.get("message", "")
-            attachments = data.get("attachments", [])
-            
-            # Build message with attachments
-            message_text = message
-            if attachments:
-                attachment_context = "\n\n[Attachments:]"
-                for att in attachments:
-                    if att.get("type") == "logo":
-                        attachment_context += f"\n- Logo: {att.get('path')}"
-                        if att.get("colors"):
-                            attachment_context += f" (Colors: {att['colors'].get('dominant')})"
-                message_text += attachment_context
-            
-            user_message = types.Content(
-                role="user",
-                parts=[types.Part(text=message_text)]
-            )
-            
-            # Stream response
-            async for event in runner.run_async(
-                user_id=user_id,
-                session_id=session_id,
-                new_message=user_message
-            ):
-                if event.content and event.content.parts:
-                    for part in event.content.parts:
-                        if hasattr(part, 'text') and part.text:
-                            await manager.send_message(session_id, {
-                                "type": "text",
-                                "content": part.text
-                            })
-            
-            # Signal completion
-            await manager.send_message(session_id, {"type": "done"})
-            
-    except WebSocketDisconnect:
-        manager.disconnect(session_id)
 
 
 @app.post("/sessions")
@@ -435,7 +484,23 @@ async def create_session(user_id: str = "default_user"):
     return {"session_id": session_id, "user_id": user_id}
 
 
-@app.get("/sessions/{user_id}")
+@app.get("/sessions/{session_id}")
+async def check_session(session_id: str):
+    """Check if a session exists and is valid."""
+    try:
+        session = await session_service.get_session(
+            app_name="content_studio",
+            user_id="default_user",
+            session_id=session_id
+        )
+        if session:
+            return {"valid": True, "session_id": session_id}
+        return JSONResponse(status_code=404, content={"valid": False, "error": "Session not found"})
+    except Exception:
+        return JSONResponse(status_code=404, content={"valid": False, "error": "Session not found"})
+
+
+@app.get("/sessions/user/{user_id}")
 async def list_sessions(user_id: str):
     """List all sessions for a user."""
     sessions = await session_service.list_sessions(
@@ -457,44 +522,64 @@ async def delete_session(user_id: str, session_id: str):
 
 
 @app.get("/generated-images")
-async def list_generated_images():
-    """List all generated images."""
+async def list_generated_images(limit: int = 20, offset: int = 0):
+    """List generated images with pagination to avoid loading too many at once."""
     images = []
-    for img_path in GENERATED_DIR.glob("*.png"):
-        images.append({
-            "filename": img_path.name,
-            "url": f"/generated/{img_path.name}",
-            "created": img_path.stat().st_mtime
-        })
+    for pattern in ['*.png', '*.jpg', '*.jpeg', '*.mp4']:
+        for img_path in GENERATED_DIR.glob(pattern):
+            images.append({
+                "filename": img_path.name,
+                "url": f"/generated/{img_path.name}",
+                "created": img_path.stat().st_mtime,
+                "type": "video" if img_path.suffix == ".mp4" else "image"
+            })
+    
     # Sort by creation time, newest first
     images.sort(key=lambda x: x["created"], reverse=True)
-    return {"images": images}
+    
+    # Apply pagination - default to 20 most recent images
+    total = len(images)
+    images = images[offset:offset + limit]
+    
+    return {
+        "images": images,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "hasMore": offset + limit < total
+    }
 
 
 class UrlScrapeRequest(BaseModel):
-    username: str  # Can be Instagram username or any URL
+    username: str
     limit: int = 6
-    url_type: str = "auto"  # auto, instagram, pinterest, website
+    url_type: str = "auto"
+    
+    @field_validator('limit')
+    @classmethod
+    def limit_range(cls, v: int) -> int:
+        if v < 1 or v > 20:
+            raise ValueError('Limit must be between 1 and 20')
+        return v
 
 
 @app.post("/scrape-instagram")
 async def scrape_url_images(request: UrlScrapeRequest):
     """
-    Scrape images from various sources for style reference.
+    Scrape images and brand info from various sources for style reference.
     
-    Supports:
-    - Instagram profiles (requires manual upload due to API restrictions)
-    - Pinterest boards
-    - General websites
-    
-    Returns:
-        - images: List of image URLs and paths
+    NOTE: Instagram scraping is limited due to API restrictions.
+    For best results, upload reference images manually.
     """
     import httpx
     import re
     from urllib.parse import urlparse
+    from tools.web_scraper import scrape_brand_from_url
     
     url_or_username = request.username.strip()
+    
+    # Extract brand info from URL
+    brand_info = scrape_brand_from_url(url_or_username)
     
     # Detect URL type
     url_type = request.url_type
@@ -511,181 +596,103 @@ async def scrape_url_images(request: UrlScrapeRequest):
         from tools.instagram import extract_username
         identifier = extract_username(url_or_username)
     else:
-        # Use domain as identifier
         try:
             parsed = urlparse(url_or_username if url_or_username.startswith("http") else f"https://{url_or_username}")
             identifier = parsed.netloc.replace(".", "_") or "website"
         except:
             identifier = "scraped"
     
-    # Create a folder for scraped images
+    # Sanitize identifier
+    identifier = re.sub(r'[^\w\-]', '_', identifier)
+    
+    # Create folder for scraped images
     scraped_dir = UPLOAD_DIR / "scraped" / identifier
     scraped_dir.mkdir(parents=True, exist_ok=True)
     
     images = []
     
+    # For Instagram, return a helpful message since scraping is restricted
+    # But still provide brand info extracted from the profile
+    if url_type == "instagram":
+        return {
+            "success": True,  # Brand info was extracted
+            "identifier": identifier,
+            "url_type": "instagram",
+            "images": [],
+            "brand_info": brand_info,
+            "message": f"Instagram images require manual upload, but we've noted @{identifier} as your brand reference. Upload images from their profile as Reference Images."
+        }
+    
+    # For websites, try to scrape images
     async with httpx.AsyncClient(
         headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         },
         follow_redirects=True,
-        timeout=20.0
+        timeout=15.0
     ) as client:
-        
-        if url_type == "instagram":
-            # Instagram has strict anti-scraping measures
-            # Return a helpful message instead of failing silently
-            print(f"Instagram URL detected: {identifier}")
+        try:
+            target_url = url_or_username if url_or_username.startswith("http") else f"https://{url_or_username}"
+            response = await client.get(target_url)
             
-            # Try multiple approaches
-            scraped = False
-            
-            # Approach 1: Try the web API (usually blocked)
-            try:
-                response = await client.get(
-                    f"https://www.instagram.com/{identifier}/?__a=1&__d=dis",
-                    headers={"X-IG-App-ID": "936619743392459"}
-                )
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        if "graphql" in data:
-                            user = data.get("graphql", {}).get("user", {})
-                            media = user.get("edge_owner_to_timeline_media", {}).get("edges", [])
-                            for i, edge in enumerate(media[:request.limit]):
-                                node = edge.get("node", {})
-                                display_url = node.get("display_url")
-                                if display_url:
-                                    try:
-                                        img_response = await client.get(display_url)
-                                        if img_response.status_code == 200:
-                                            filename = f"ig_{identifier}_{i}.jpg"
-                                            filepath = scraped_dir / filename
-                                            with open(filepath, "wb") as f:
-                                                f.write(img_response.content)
-                                            images.append({
-                                                "url": f"/uploads/scraped/{identifier}/{filename}",
-                                                "full_path": str(filepath),
-                                                "source": "instagram"
-                                            })
-                                            scraped = True
-                                    except:
-                                        continue
-                    except:
-                        pass
-            except Exception as e:
-                print(f"Instagram API approach failed: {e}")
-            
-            # Approach 2: Try scraping the HTML page for og:image
-            if not scraped:
-                try:
-                    response = await client.get(f"https://www.instagram.com/{identifier}/")
-                    if response.status_code == 200:
-                        html = response.text
-                        # Extract og:image meta tags
-                        og_images = re.findall(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html)
-                        for i, img_url in enumerate(og_images[:request.limit]):
-                            try:
-                                img_response = await client.get(img_url)
-                                if img_response.status_code == 200 and len(img_response.content) > 5000:
-                                    filename = f"ig_{identifier}_{i}.jpg"
-                                    filepath = scraped_dir / filename
-                                    with open(filepath, "wb") as f:
-                                        f.write(img_response.content)
-                                    images.append({
-                                        "url": f"/uploads/scraped/{identifier}/{filename}",
-                                        "full_path": str(filepath),
-                                        "source": "instagram"
-                                    })
-                                    scraped = True
-                            except:
-                                continue
-                except Exception as e:
-                    print(f"Instagram HTML scraping failed: {e}")
-            
-            # If still no images, return helpful message
-            if not images:
-                return {
-                    "success": False,
-                    "identifier": identifier,
-                    "url_type": "instagram",
-                    "images": [],
-                    "message": f"Instagram requires authentication to access @{identifier}'s posts. Please download images from their profile manually and upload them as Reference Images below."
-                }
-        
-        elif url_type in ["pinterest", "website"]:
-            # Generic website/Pinterest scraping - extract images from page
-            try:
-                target_url = url_or_username if url_or_username.startswith("http") else f"https://{url_or_username}"
-                response = await client.get(target_url)
+            if response.status_code == 200:
+                html = response.text
                 
-                if response.status_code == 200:
-                    html = response.text
-                    
-                    # Extract image URLs from HTML
-                    img_patterns = [
-                        r'<img[^>]+src=["\']([^"\']+)["\']',
-                        r'<meta[^>]+property="og:image"[^>]+content=["\']([^"\']+)["\']',
-                        r'<meta[^>]+name="twitter:image"[^>]+content=["\']([^"\']+)["\']',
-                        r'background-image:\s*url\(["\']?([^"\')\s]+)["\']?\)',
-                        r'srcset=["\']([^\s"\']+)',
-                    ]
-                    
-                    found_urls = set()
-                    for pattern in img_patterns:
-                        matches = re.findall(pattern, html, re.IGNORECASE)
-                        for match in matches:
-                            if match.startswith("//"):
-                                match = "https:" + match
-                            elif match.startswith("/"):
-                                parsed = urlparse(target_url)
-                                match = f"{parsed.scheme}://{parsed.netloc}{match}"
-                            elif not match.startswith("http"):
-                                continue
-                            
-                            # Filter for actual image URLs
-                            if any(ext in match.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']):
-                                # Skip tiny images (usually icons)
-                                if not any(skip in match.lower() for skip in ['icon', 'favicon', '16x16', '32x32', '1x1', 'pixel', 'tracking']):
-                                    found_urls.add(match)
-                    
-                    # Download images
-                    for i, img_url in enumerate(list(found_urls)[:request.limit]):
-                        try:
-                            img_response = await client.get(img_url, timeout=10.0)
-                            if img_response.status_code == 200 and len(img_response.content) > 10000:  # Skip tiny images
-                                ext = ".jpg"
-                                for e in ['.png', '.webp', '.gif']:
-                                    if e in img_url.lower():
-                                        ext = e
-                                        break
-                                
-                                filename = f"web_{identifier}_{i}{ext}"
-                                filepath = scraped_dir / filename
-                                
-                                with open(filepath, "wb") as f:
-                                    f.write(img_response.content)
-                                
-                                images.append({
-                                    "url": f"/uploads/scraped/{identifier}/{filename}",
-                                    "full_path": str(filepath),
-                                    "source": url_type
-                                })
-                        except Exception as e:
-                            print(f"Error downloading image from {img_url}: {e}")
+                # Extract image URLs
+                img_patterns = [
+                    r'<img[^>]+src=["\']([^"\']+)["\']',
+                    r'<meta[^>]+property="og:image"[^>]+content=["\']([^"\']+)["\']',
+                ]
+                
+                found_urls = set()
+                for pattern in img_patterns:
+                    matches = re.findall(pattern, html, re.IGNORECASE)
+                    for match in matches:
+                        if match.startswith("//"):
+                            match = "https:" + match
+                        elif match.startswith("/"):
+                            parsed = urlparse(target_url)
+                            match = f"{parsed.scheme}://{parsed.netloc}{match}"
+                        elif not match.startswith("http"):
                             continue
+                        
+                        if any(ext in match.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+                            if not any(skip in match.lower() for skip in ['icon', 'favicon', '1x1', 'pixel']):
+                                found_urls.add(match)
+                
+                # Download images
+                for i, img_url in enumerate(list(found_urls)[:request.limit]):
+                    try:
+                        img_response = await client.get(img_url, timeout=10.0)
+                        if img_response.status_code == 200 and len(img_response.content) > 10000:
+                            ext = ".jpg"
+                            for e in ['.png', '.webp']:
+                                if e in img_url.lower():
+                                    ext = e
+                                    break
                             
-            except Exception as e:
-                print(f"Website scraping error: {e}")
+                            filename = f"web_{identifier}_{i}{ext}"
+                            filepath = scraped_dir / filename
+                            
+                            with open(filepath, "wb") as f:
+                                f.write(img_response.content)
+                            
+                            images.append({
+                                "url": f"/uploads/scraped/{identifier}/{filename}",
+                                "full_path": str(filepath),
+                                "source": url_type
+                            })
+                    except Exception:
+                        continue
+                        
+        except Exception as e:
+            return {
+                "success": False,
+                "identifier": identifier,
+                "url_type": url_type,
+                "images": [],
+                "message": "Could not fetch images from this URL. Please upload reference images manually."
+            }
     
     if images:
         return {
@@ -693,15 +700,17 @@ async def scrape_url_images(request: UrlScrapeRequest):
             "identifier": identifier,
             "url_type": url_type,
             "images": images,
-            "message": f"Successfully scraped {len(images)} images for style reference"
+            "brand_info": brand_info,
+            "message": f"Successfully scraped {len(images)} images and brand info for style reference"
         }
     
     return {
-        "success": False,
+        "success": True if brand_info.get("status") == "success" else False,
         "identifier": identifier,
         "url_type": url_type,
         "images": [],
-        "message": f"Could not scrape images from this URL. Please upload reference images manually using the 'Reference Images' section below."
+        "brand_info": brand_info,
+        "message": "Extracted brand info. No images found - please upload reference images manually."
     }
 
 
@@ -711,7 +720,6 @@ async def get_preset_paths():
     presets_dir = STATIC_DIR / "presets"
     presets = {}
     
-    # Define preset mappings - logo and reference images folder
     preset_config = {
         "socialbunkr": {
             "logo": "socialbunkr-logo.jpeg",
@@ -730,14 +738,12 @@ async def get_preset_paths():
     for preset_id, config in preset_config.items():
         preset_data = {}
         
-        # Logo path
         if config["logo"]:
             logo_path = presets_dir / config["logo"]
             if logo_path.exists():
                 preset_data["logo_url"] = f"/static/presets/{config['logo']}"
                 preset_data["logo_full_path"] = str(logo_path)
         
-        # Reference images
         refs_folder = presets_dir / config["refs_folder"]
         if refs_folder.exists() and refs_folder.is_dir():
             ref_files = []
@@ -746,7 +752,7 @@ async def get_preset_paths():
             
             if ref_files:
                 preset_data["reference_images"] = []
-                for ref_file in sorted(ref_files)[:8]:  # Max 8 reference images
+                for ref_file in sorted(ref_files)[:8]:
                     preset_data["reference_images"].append({
                         "url": f"/static/presets/{config['refs_folder']}/{ref_file.name}",
                         "full_path": str(ref_file)
@@ -758,6 +764,8 @@ async def get_preset_paths():
     return {"presets": presets}
 
 
+
+
 # =============================================================================
 # Run Server
 # =============================================================================
@@ -765,18 +773,14 @@ async def get_preset_paths():
 if __name__ == "__main__":
     import uvicorn
     
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", 5000))
-    debug = os.getenv("DEBUG", "true").lower() == "true"
-    
     print(f"\n🎨 Content Studio Agent starting...")
-    print(f"📍 Custom UI: http://localhost:{port}")
-    print(f"📍 API Docs: http://localhost:{port}/docs")
+    print(f"📍 Custom UI: http://localhost:{PORT}")
+    print(f"📍 API Docs: http://localhost:{PORT}/docs")
     print(f"\n💡 Tip: Run 'adk web' for ADK's built-in UI\n")
     
     uvicorn.run(
         "app.fast_api_app:app",
-        host=host,
-        port=port,
-        reload=debug
+        host=HOST,
+        port=PORT,
+        reload=DEBUG
     )

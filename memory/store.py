@@ -1,129 +1,275 @@
-"""Session memory store for maintaining context across conversations."""
+"""
+Persistent Memory Store for Content Studio Agent.
+Uses SQLite for session persistence across restarts.
+"""
 
-from datetime import datetime
-from typing import Any, Optional
 import json
+import sqlite3
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Optional
+from contextlib import contextmanager
+
+from memory.state import SessionState, WorkflowState, BrandContext, PostContext, CampaignContext
+
+
+class DatabaseManager:
+    """SQLite database manager with connection pooling."""
+    
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._init_db()
+    
+    def _init_db(self):
+        """Initialize database schema."""
+        with self.get_connection() as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    state_json TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                
+                CREATE TABLE IF NOT EXISTS generated_content (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    content_type TEXT NOT NULL,
+                    content_path TEXT,
+                    metadata_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+                );
+                
+                CREATE TABLE IF NOT EXISTS brand_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    industry TEXT,
+                    overview TEXT,
+                    brand_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+                CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
+                CREATE INDEX IF NOT EXISTS idx_content_session ON generated_content(session_id);
+            """)
+    
+    @contextmanager
+    def get_connection(self):
+        """Get a database connection with proper cleanup."""
+        conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 class MemoryStore:
-    """In-memory store for session context and project data."""
+    """Persistent memory store for session and content management."""
     
-    def __init__(self):
-        self.projects: dict[str, dict] = {}
-        self.profiles: dict[str, dict] = {}
-        self.generated_content: list[dict] = []
-        self.session_context: dict[str, Any] = {}
+    def __init__(self, db_path: Optional[str] = None):
+        if db_path is None:
+            from config.settings import DATABASE_PATH
+            db_path = str(DATABASE_PATH)
+        
+        self.db = DatabaseManager(db_path)
+        self._session_cache: dict[str, SessionState] = {}
     
-    def save_project(
-        self,
-        project_id: str,
-        name: str,
-        brand_info: dict[str, Any]
-    ) -> dict:
-        """Save or update a project."""
-        self.projects[project_id] = {
-            "id": project_id,
-            "name": name,
-            "brand_info": brand_info,
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
-            "content_history": []
-        }
-        return {"status": "success", "project_id": project_id}
+    # =========================================================================
+    # Session Management
+    # =========================================================================
     
-    def get_project(self, project_id: str) -> Optional[dict]:
-        """Get a project by ID."""
-        return self.projects.get(project_id)
+    def create_session(self, session_id: str, user_id: str) -> SessionState:
+        """Create a new session."""
+        state = SessionState(session_id=session_id, user_id=user_id)
+        self._save_session(state)
+        self._session_cache[session_id] = state
+        return state
     
-    def list_projects(self) -> list[dict]:
-        """List all projects."""
-        return list(self.projects.values())
+    def get_session(self, session_id: str) -> Optional[SessionState]:
+        """Get a session by ID."""
+        # Check cache first
+        if session_id in self._session_cache:
+            return self._session_cache[session_id]
+        
+        # Load from database
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT state_json FROM sessions WHERE session_id = ?",
+                (session_id,)
+            ).fetchone()
+            
+            if row:
+                state = SessionState.from_dict(json.loads(row["state_json"]))
+                self._session_cache[session_id] = state
+                return state
+        
+        return None
     
-    def save_profile(
-        self,
-        username: str,
-        profile_data: dict[str, Any]
-    ) -> dict:
-        """Save analyzed profile data."""
-        self.profiles[username] = {
-            "username": username,
-            "data": profile_data,
-            "analyzed_at": datetime.now().isoformat()
-        }
-        return {"status": "success", "username": username}
+    def get_or_create_session(self, session_id: str, user_id: str) -> SessionState:
+        """Get existing session or create new one."""
+        session = self.get_session(session_id)
+        if session is None:
+            session = self.create_session(session_id, user_id)
+        return session
     
-    def get_profile(self, username: str) -> Optional[dict]:
-        """Get saved profile data."""
-        return self.profiles.get(username)
+    def update_session(self, state: SessionState) -> None:
+        """Update session state."""
+        state.updated_at = datetime.now()
+        self._save_session(state)
+        self._session_cache[state.session_id] = state
+    
+    def _save_session(self, state: SessionState) -> None:
+        """Save session to database."""
+        with self.db.get_connection() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO sessions (session_id, user_id, state_json, updated_at)
+                VALUES (?, ?, ?, ?)
+            """, (
+                state.session_id,
+                state.user_id,
+                json.dumps(state.to_dict()),
+                datetime.now()
+            ))
+    
+    def delete_session(self, session_id: str) -> None:
+        """Delete a session."""
+        with self.db.get_connection() as conn:
+            conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        self._session_cache.pop(session_id, None)
+    
+    def list_sessions(self, user_id: str) -> list[SessionState]:
+        """List all sessions for a user."""
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT state_json FROM sessions WHERE user_id = ? ORDER BY updated_at DESC",
+                (user_id,)
+            ).fetchall()
+            
+            return [SessionState.from_dict(json.loads(row["state_json"])) for row in rows]
+    
+    def cleanup_old_sessions(self, max_age_hours: int = 24) -> int:
+        """Clean up sessions older than max_age_hours."""
+        cutoff = datetime.now() - timedelta(hours=max_age_hours)
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM sessions WHERE updated_at < ?",
+                (cutoff,)
+            )
+            deleted = cursor.rowcount
+        
+        # Clear cache entries
+        for session_id in list(self._session_cache.keys()):
+            if self._session_cache[session_id].updated_at < cutoff:
+                del self._session_cache[session_id]
+        
+        return deleted
+    
+    # =========================================================================
+    # Content Management
+    # =========================================================================
     
     def save_generated_content(
         self,
+        session_id: str,
         content_type: str,
-        content: dict[str, Any],
-        project_id: str = None
-    ) -> dict:
-        """Save generated content (images, captions, etc.)."""
-        entry = {
-            "type": content_type,
-            "content": content,
-            "project_id": project_id,
-            "created_at": datetime.now().isoformat()
-        }
-        self.generated_content.append(entry)
-        
-        # Also add to project history if project_id provided
-        if project_id and project_id in self.projects:
-            self.projects[project_id]["content_history"].append(entry)
-            self.projects[project_id]["updated_at"] = datetime.now().isoformat()
-        
-        return {"status": "success", "content_id": len(self.generated_content) - 1}
+        content_path: str,
+        metadata: Optional[dict] = None
+    ) -> int:
+        """Save generated content reference."""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute("""
+                INSERT INTO generated_content (session_id, content_type, content_path, metadata_json)
+                VALUES (?, ?, ?, ?)
+            """, (
+                session_id,
+                content_type,
+                content_path,
+                json.dumps(metadata or {})
+            ))
+            return cursor.lastrowid
+    
+    def get_session_content(self, session_id: str, content_type: Optional[str] = None) -> list[dict]:
+        """Get generated content for a session."""
+        with self.db.get_connection() as conn:
+            if content_type:
+                rows = conn.execute("""
+                    SELECT * FROM generated_content 
+                    WHERE session_id = ? AND content_type = ?
+                    ORDER BY created_at DESC
+                """, (session_id, content_type)).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT * FROM generated_content 
+                    WHERE session_id = ?
+                    ORDER BY created_at DESC
+                """, (session_id,)).fetchall()
+            
+            return [dict(row) for row in rows]
     
     def get_recent_content(self, limit: int = 10) -> list[dict]:
-        """Get recently generated content."""
-        return self.generated_content[-limit:][::-1]
+        """Get recent generated content across all sessions."""
+        with self.db.get_connection() as conn:
+            rows = conn.execute("""
+                SELECT * FROM generated_content 
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
+            
+            return [dict(row) for row in rows]
     
-    def set_context(self, key: str, value: Any) -> None:
-        """Set a context value for the current session."""
-        self.session_context[key] = value
+    # =========================================================================
+    # Brand Profiles
+    # =========================================================================
     
-    def get_context(self, key: str, default: Any = None) -> Any:
-        """Get a context value."""
-        return self.session_context.get(key, default)
+    def save_brand_profile(self, brand: BrandContext) -> int:
+        """Save a brand profile for reuse."""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute("""
+                INSERT INTO brand_profiles (name, industry, overview, brand_json)
+                VALUES (?, ?, ?, ?)
+            """, (
+                brand.name,
+                brand.industry,
+                brand.overview,
+                json.dumps(brand.to_dict())
+            ))
+            return cursor.lastrowid
     
-    def get_context_summary(self) -> str:
-        """Get a summary of current context for the agent."""
-        summary_parts = []
-        
-        if self.projects:
-            summary_parts.append(f"Active projects: {len(self.projects)}")
-            recent_project = list(self.projects.values())[-1]
-            summary_parts.append(f"Last project: {recent_project['name']}")
-        
-        if self.profiles:
-            summary_parts.append(f"Analyzed profiles: {len(self.profiles)}")
-        
-        if self.generated_content:
-            summary_parts.append(f"Generated items: {len(self.generated_content)}")
-            recent = self.generated_content[-1]
-            summary_parts.append(f"Last generated: {recent['type']}")
-        
-        if self.session_context:
-            if "current_brand" in self.session_context:
-                summary_parts.append(f"Current brand: {self.session_context['current_brand']}")
-            if "current_theme" in self.session_context:
-                summary_parts.append(f"Working on: {self.session_context['current_theme']}")
-        
-        return " | ".join(summary_parts) if summary_parts else "No previous context."
+    def get_brand_profile(self, name: str) -> Optional[BrandContext]:
+        """Get a brand profile by name."""
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT brand_json FROM brand_profiles WHERE name = ?",
+                (name,)
+            ).fetchone()
+            
+            if row:
+                return BrandContext.from_dict(json.loads(row["brand_json"]))
+        return None
     
-    def clear(self) -> None:
-        """Clear all stored data."""
-        self.projects.clear()
-        self.profiles.clear()
-        self.generated_content.clear()
-        self.session_context.clear()
+    def list_brand_profiles(self) -> list[BrandContext]:
+        """List all saved brand profiles."""
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT brand_json FROM brand_profiles ORDER BY updated_at DESC"
+            ).fetchall()
+            
+            return [BrandContext.from_dict(json.loads(row["brand_json"])) for row in rows]
 
 
-# Global memory store instance
+# =============================================================================
+# Global Instance and Tool Functions
+# =============================================================================
+
 _memory_store: Optional[MemoryStore] = None
 
 
@@ -135,84 +281,69 @@ def get_memory_store() -> MemoryStore:
     return _memory_store
 
 
-# Tool functions for agents
-def save_to_memory(
-    category: str,
-    key: str,
-    value: str
-) -> dict:
+# Tool functions for agents (simplified interface)
+
+def save_to_memory(category: str, key: str, value: str) -> dict:
     """
     Save data to memory for later recall.
     
     Args:
-        category: Type of data (project, profile, content, context)
+        category: Type of data (context, content, brand)
         key: Identifier for the data
-        value: JSON string or simple text value to save
-        
-    Returns:
-        Confirmation of save
+        value: JSON string or simple text value
     """
     store = get_memory_store()
     
-    # Try to parse value as JSON
     try:
         data = json.loads(value) if value.startswith("{") or value.startswith("[") else {"value": value}
-    except:
+    except json.JSONDecodeError:
         data = {"value": value}
     
-    if category == "project":
-        return store.save_project(key, data.get("name", key), data)
-    elif category == "profile":
-        return store.save_profile(key, data)
+    if category == "brand":
+        brand = BrandContext(**data) if isinstance(data, dict) and "name" in data else BrandContext(name=key)
+        store.save_brand_profile(brand)
+        return {"status": "success", "message": f"Brand '{key}' saved"}
+    
     elif category == "content":
-        return store.save_generated_content(data.get("type", "unknown"), data, key)
-    elif category == "context":
-        store.set_context(key, data)
-        return {"status": "success", "key": key}
-    else:
-        return {"status": "error", "message": f"Unknown category: {category}"}
+        content_id = store.save_generated_content(
+            session_id=key,
+            content_type=data.get("type", "unknown"),
+            content_path=data.get("path", ""),
+            metadata=data
+        )
+        return {"status": "success", "content_id": content_id}
+    
+    return {"status": "success", "key": key}
 
 
-def recall_from_memory(
-    category: str,
-    key: str = None
-) -> dict:
+def recall_from_memory(category: str, key: str = None) -> dict:
     """
     Recall data from memory.
     
     Args:
-        category: Type of data to recall
+        category: Type of data to recall (brand, content, recent)
         key: Specific identifier (optional)
-        
-    Returns:
-        Retrieved data
     """
     store = get_memory_store()
     
-    if category == "project":
+    if category == "brand":
         if key:
-            project = store.get_project(key)
-            return {"status": "success", "data": project} if project else {"status": "not_found"}
-        return {"status": "success", "data": store.list_projects()}
-    
-    elif category == "profile":
-        if key:
-            profile = store.get_profile(key)
-            return {"status": "success", "data": profile} if profile else {"status": "not_found"}
-        return {"status": "success", "data": list(store.profiles.values())}
+            brand = store.get_brand_profile(key)
+            return {"status": "success", "data": brand.to_dict() if brand else None}
+        brands = store.list_brand_profiles()
+        return {"status": "success", "data": [b.to_dict() for b in brands]}
     
     elif category == "content":
-        limit = int(key) if key and key.isdigit() else 10
-        return {"status": "success", "data": store.get_recent_content(limit)}
-    
-    elif category == "context":
         if key:
-            value = store.get_context(key)
-            return {"status": "success", "data": value}
-        return {"status": "success", "data": store.session_context}
+            content = store.get_session_content(key)
+            return {"status": "success", "data": content}
+        content = store.get_recent_content(10)
+        return {"status": "success", "data": content}
     
-    elif category == "summary":
-        return {"status": "success", "summary": store.get_context_summary()}
+    elif category == "recent":
+        limit = int(key) if key and key.isdigit() else 10
+        content = store.get_recent_content(limit)
+        return {"status": "success", "data": content}
     
     return {"status": "error", "message": f"Unknown category: {category}"}
 
@@ -223,37 +354,20 @@ def get_or_create_project(
     niche: str = "",
     tone: str = "professional"
 ) -> dict:
-    """
-    Get existing project or create a new one.
-    
-    Args:
-        project_name: Name of the project
-        brand_name: Brand name (for new projects)
-        niche: Brand industry/niche
-        tone: Brand voice/tone
-        
-    Returns:
-        Project data
-    """
+    """Get existing brand/project or create new one."""
     store = get_memory_store()
     
-    # Check if project exists
-    for project_id, project in store.projects.items():
-        if project["name"].lower() == project_name.lower():
-            return {"status": "success", "project": project, "is_new": False}
+    # Check if brand exists
+    brand = store.get_brand_profile(project_name)
+    if brand:
+        return {"status": "success", "project": brand.to_dict(), "is_new": False}
     
-    # Create new project
-    import uuid
-    project_id = str(uuid.uuid4())[:8]
-    brand_info = {
-        "name": brand_name or project_name,
-        "niche": niche,
-        "tone": tone
-    }
-    store.save_project(project_id, project_name, brand_info)
+    # Create new brand
+    new_brand = BrandContext(
+        name=brand_name or project_name,
+        industry=niche,
+        tone=tone
+    )
+    store.save_brand_profile(new_brand)
     
-    return {
-        "status": "success",
-        "project": store.get_project(project_id),
-        "is_new": True
-    }
+    return {"status": "success", "project": new_brand.to_dict(), "is_new": True}

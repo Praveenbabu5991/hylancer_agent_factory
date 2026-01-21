@@ -1,3 +1,5 @@
-"""Content Studio Agent - Multi-agent content creation platform."""
+"""Content Studio Agent Application Package."""
 
-__version__ = "0.1.0"
+from app.agent import root_agent
+
+__all__ = ["root_agent"]

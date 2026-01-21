@@ -1,11 +1,16 @@
-"""Image generation tools using Gemini API."""
+"""
+Image Generation Tools using Gemini API.
+
+Provides image generation, editing, and animation capabilities
+with proper error handling and rate limiting.
+"""
 
 import os
 import uuid
-import base64
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from google import genai
 from google.genai import types
@@ -14,6 +19,64 @@ from colorthief import ColorThief
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+class ImageGenerationError(Exception):
+    """Custom exception for image generation errors."""
+    pass
+
+
+def _get_client():
+    """Get Gemini client with validation."""
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ImageGenerationError(
+            "API key not configured. Please set GOOGLE_API_KEY in your environment."
+        )
+    return genai.Client(api_key=api_key)
+
+
+def _retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0):
+    """Execute function with exponential backoff retry."""
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            last_error = e
+            error_str = str(e).lower()
+            # Don't retry on certain errors
+            if "invalid" in error_str or "not found" in error_str:
+                raise
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"⚠️ Attempt {attempt + 1} failed, retrying in {delay}s...")
+                time.sleep(delay)
+    raise last_error
+
+
+def _format_error(error: Exception, context: str = "") -> dict:
+    """Format error into user-friendly response."""
+    error_str = str(error).lower()
+    
+    if "quota" in error_str or "rate" in error_str:
+        message = "The image generation service is busy. Please wait a moment and try again."
+    elif "safety" in error_str or "blocked" in error_str:
+        message = "The image couldn't be generated due to content guidelines. Try adjusting your prompt."
+    elif "api" in error_str and "key" in error_str:
+        message = "There's an issue with the API configuration. Please contact support."
+    elif "timeout" in error_str:
+        message = "The image generation took too long. Try a simpler design."
+    elif "not found" in error_str:
+        message = "The requested model or resource wasn't found. Please try again."
+    else:
+        message = f"Image generation failed. {context}" if context else "Image generation failed. Please try again."
+    
+    return {
+        "status": "error",
+        "message": message,
+        "technical_details": str(error)
+    }
 
 
 def extract_brand_colors(image_path: str) -> dict:
@@ -27,6 +90,14 @@ def extract_brand_colors(image_path: str) -> dict:
         Dictionary with dominant color and palette
     """
     try:
+        if not os.path.exists(image_path):
+            return {
+                "status": "error",
+                "message": f"Image not found: {image_path}",
+                "dominant": "#3498db",
+                "palette": ["#3498db", "#2ecc71", "#e74c3c", "#f39c12", "#9b59b6"]
+            }
+        
         color_thief = ColorThief(image_path)
         dominant = color_thief.get_color(quality=1)
         palette = color_thief.get_palette(color_count=6, quality=1)
@@ -42,7 +113,7 @@ def extract_brand_colors(image_path: str) -> dict:
     except Exception as e:
         return {
             "status": "error",
-            "message": str(e),
+            "message": f"Could not extract colors: {str(e)}",
             "dominant": "#3498db",
             "palette": ["#3498db", "#2ecc71", "#e74c3c", "#f39c12", "#9b59b6"]
         }
@@ -67,346 +138,160 @@ def generate_post_image(
     Args:
         prompt: Description of the image to generate
         brand_name: Name of the brand/company
-        brand_colors: Comma-separated brand colors (hex codes), e.g. "#3498db,#2ecc71"
+        brand_colors: Comma-separated brand colors (hex codes)
         style: Visual style (creative, professional, playful, minimal, bold)
         logo_path: Path to logo image to incorporate
         output_dir: Directory to save generated images
         industry: Brand's industry/niche
         occasion: Special occasion/event theme
-        reference_images: Comma-separated paths to reference images for style inspiration
-        company_overview: Description of what the company does (for contextual imagery)
-        greeting_text: Event greeting text to display at top of image (e.g., "Happy Valentine's Day!")
+        reference_images: Comma-separated paths to reference images
+        company_overview: Description of what the company does
+        greeting_text: Event greeting text (e.g., "Happy Valentine's Day!")
         
     Returns:
         Dictionary with image path and generation details
     """
-    # Debug logging
-    print(f"🎨 generate_post_image called:")
-    print(f"   - prompt: {prompt[:100]}...")
-    print(f"   - brand_name: {brand_name}")
-    print(f"   - logo_path: {logo_path}")
-    print(f"   - reference_images: {reference_images}")
+    print(f"🎨 Generating image for: {brand_name or 'brand'}")
+    print(f"   Style: {style}, Occasion: {occasion or 'general'}")
     
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return {"status": "error", "message": "No API key found. Set GEMINI_API_KEY environment variable."}
-    
-    client = genai.Client(api_key=api_key)
-    
-    # Build color instructions - parse comma-separated colors
-    color_scheme = ""
-    if brand_colors:
-        colors_list = [c.strip() for c in brand_colors.split(",") if c.strip()]
-        if colors_list:
-            color_scheme = f"Primary brand color: {colors_list[0]}. "
-            if len(colors_list) > 1:
-                color_scheme += f"Accent colors: {', '.join(colors_list[1:3])}. "
-    
-    # Style descriptions
-    style_descriptions = {
-        'creative': 'Artistic, imaginative, and visually striking with unique creative elements',
-        'professional': 'Clean, corporate, and polished with a business-appropriate aesthetic',
-        'playful': 'Fun, vibrant, and energetic with playful visual elements',
-        'minimal': 'Simple, clean, and focused with minimal visual clutter',
-        'bold': 'Strong, impactful, and attention-grabbing with bold colors and shapes'
-    }
-    style_desc = style_descriptions.get(style, style_descriptions['creative'])
-    
-    # Build occasion context
-    occasion_context = ""
-    if occasion:
-        occasion_context = f"\nTheme/Occasion: {occasion} - Incorporate subtle thematic elements related to this."
-    
-    # Build reference images context
-    reference_context = ""
-    has_reference_images = False
-    extracted_ref_colors = []
-    use_real_people = True  # Default to real people if no references
-    
-    if reference_images:
-        ref_paths = [p.strip() for p in reference_images.split(",") if p.strip() and os.path.exists(p.strip())]
-        print(f"   📸 Reference image paths found: {len(ref_paths)} images")
-        for rp in ref_paths:
-            print(f"      - {rp} (exists: {os.path.exists(rp)})")
-        
-        # Auto-extract colors from first few references
-        for rp in ref_paths[:3]:  # Extract from up to 3 references
-            try:
-                ref_colors = extract_brand_colors(rp)
-                if ref_colors.get("status") == "success":
-                    extracted_ref_colors.append(ref_colors.get("dominant"))
-                    extracted_ref_colors.extend(ref_colors.get("palette", [])[:2])
-            except:
-                pass
-        
-        # Remove duplicates and format
-        extracted_ref_colors = list(dict.fromkeys(extracted_ref_colors))[:6]
-        extracted_colors_str = ", ".join(extracted_ref_colors) if extracted_ref_colors else "Match reference style"
-        print(f"   🎨 Auto-extracted colors from refs: {extracted_colors_str}")
-        
-        if ref_paths:
-            has_reference_images = True
-            use_real_people = False  # Use reference style instead
-            reference_context = f"""
-═══════════════════════════════════════════════
-🎨 REFERENCE IMAGES ({len(ref_paths)} provided) - MATCH THIS STYLE!
-═══════════════════════════════════════════════
-⚠️ CRITICAL: These references define the EXACT visual identity!
-
-🎯 AUTO-EXTRACTED COLORS FROM REFERENCES:
-{extracted_colors_str}
-
-✅ YOU MUST MATCH:
-1. **COLOR PALETTE**: Use the extracted colors above as PRIMARY palette
-2. **DESIGN STYLE**: Match the illustration/photo/graphic style from refs
-3. **VISUAL TONE**: Same mood - if refs are dark/moody, be dark/moody
-4. **TYPOGRAPHY FEEL**: Match the bold/light/modern font styling
-5. **COMPOSITION**: Similar layout principles and spacing
-6. **QUALITY LEVEL**: Match the premium production quality
-
-⚠️ PRIORITY ORDER:
-1. FIRST: Match reference image colors and style
-2. SECOND: Incorporate brand colors as accents
-3. THIRD: Add the specific content/text requested
-
-🎨 COLOR APPLICATION:
-- PRIMARY (headlines/main elements): {extracted_ref_colors[0] if extracted_ref_colors else 'From references'}
-- BACKGROUND: {extracted_ref_colors[1] if len(extracted_ref_colors) > 1 else 'From references'}
-- ACCENTS: {extracted_ref_colors[2] if len(extracted_ref_colors) > 2 else 'Brand colors'}
-
-Think of this as: "Create a NEW image that looks like it belongs in the SAME CAMPAIGN as the references."
-The generated image should feel like it was designed by the SAME designer who made the references."""
-    else:
-        # No reference images - use real people default
-        reference_context = """
-═══════════════════════════════════════════════
-📷 NO REFERENCE IMAGES - USE REAL PEOPLE!
-═══════════════════════════════════════════════
-⚠️ CRITICAL: Since no reference images were provided, use REAL PROFESSIONAL PHOTOGRAPHY style!
-
-✅ YOU MUST:
-1. **USE REAL PEOPLE**: Show authentic, diverse professionals
-2. **PHOTOGRAPHY STYLE**: High-quality professional photography (not illustrations)
-3. **DIVERSE REPRESENTATION**: Include people of different backgrounds
-4. **PROFESSIONAL SETTINGS**: Modern offices, co-working spaces, or relevant environments
-5. **AUTHENTIC EXPRESSIONS**: Natural, genuine emotions (not stock photo poses)
-
-🎨 VISUAL STYLE:
-- Clean, modern professional photography
-- Natural lighting or studio quality
-- Shallow depth of field for focus
-- Warm, inviting color tones
-- Premium magazine-quality aesthetics
-
-🚫 AVOID:
-- Generic illustrations or cartoons (unless brand specifically requires)
-- Obvious stock photo poses
-- Overly staged or artificial scenes
-- Empty graphics without human element
-
-**The image should feel like a premium lifestyle/business magazine photo shoot.**"""
-
-    # Build logo context
-    logo_context = ""
-    if logo_path and os.path.exists(logo_path):
-        logo_context = """
-═══════════════════════════════════════════════
-🖼️ BRAND LOGO (CRITICAL - MUST BE ACCURATE!)
-═══════════════════════════════════════════════
-A brand logo image has been provided. THIS IS THE ACTUAL LOGO - USE IT EXACTLY!
-
-⚠️ LOGO ACCURACY REQUIREMENTS:
-- REPRODUCE the logo EXACTLY as provided - do not recreate or redesign it
-- The logo's shape, colors, and proportions MUST match the original
-- Position: Bottom-right corner OR top-left (subtle but clearly visible)
-- Size: Approximately 10-15% of image width
-- Visibility: Must be legible against the background
-- Do NOT add effects that distort the logo (no heavy shadows/glows)
-
-✅ Logo Checklist:
-□ Logo is the EXACT same as the provided image
-□ Logo colors are accurate
-□ Logo is readable and not pixelated
-□ Logo placement is professional
-□ Logo doesn't clash with other design elements"""
-    
-    # Build company context with imagery suggestions
-    company_context = ""
-    if company_overview:
-        # Generate relevant visual elements based on company overview
-        company_lower = company_overview.lower()
-        visual_suggestions = []
-        
-        if any(word in company_lower for word in ['freelance', 'freelancing', 'gig', 'remote']):
-            visual_suggestions.append("modern professionals, laptops, flexible work, digital connections")
-        if any(word in company_lower for word in ['platform', 'marketplace', 'connect']):
-            visual_suggestions.append("people connecting, handshakes, bridge metaphors, networks")
-        if any(word in company_lower for word in ['tech', 'technology', 'software', 'app']):
-            visual_suggestions.append("sleek devices, digital interfaces, modern aesthetics")
-        if any(word in company_lower for word in ['business', 'enterprise', 'corporate']):
-            visual_suggestions.append("professional settings, success imagery, growth charts")
-        if any(word in company_lower for word in ['creative', 'design', 'art']):
-            visual_suggestions.append("artistic elements, creative tools, vibrant colors")
-        
-        visual_elements = " | ".join(visual_suggestions) if visual_suggestions else "professional, relevant imagery"
-        
-        company_context = f"""
-═══════════════════════════════════════════════
-🏢 COMPANY CONTEXT (Use for Relevant Imagery!)
-═══════════════════════════════════════════════
-WHAT THEY DO: {company_overview}
-
-SUGGESTED VISUAL ELEMENTS: {visual_elements}
-
-⚠️ Imagery should RELATE to their business - don't just show generic graphics!"""
-    
-    # Extract text elements from prompt if present
-    import re
-    extracted_greeting = ""
-    
-    # Parse prompt for greeting if not provided as parameter
-    prompt_lower = prompt.lower()
-    if not greeting_text:  # Only extract if not provided as parameter
-        if "greeting:" in prompt_lower or "happy " in prompt_lower:
-            # Try to extract greeting
-            greeting_match = re.search(r'GREETING[:\s]*["\']?([^"\'"\n]+)["\']?', prompt, re.IGNORECASE)
-            if greeting_match:
-                extracted_greeting = greeting_match.group(1).strip()
-            elif "happy valentine" in prompt_lower:
-                extracted_greeting = "Happy Valentine's Day!"
-            elif "happy republic" in prompt_lower:
-                extracted_greeting = "Happy Republic Day!"
-            elif "happy diwali" in prompt_lower:
-                extracted_greeting = "Happy Diwali!"
-            elif "happy holi" in prompt_lower:
-                extracted_greeting = "Happy Holi!"
-            elif "happy new year" in prompt_lower:
-                extracted_greeting = "Happy New Year!"
-    
-    # Use parameter if provided, otherwise use extracted
-    final_greeting = greeting_text if greeting_text else extracted_greeting
-    print(f"   🎊 Greeting text: '{final_greeting}'")
-    
-    # Build the prompt - professional social media marketer approach
-    full_prompt = f"""You are an ELITE SOCIAL MEDIA DESIGNER creating a premium Instagram post for a professional marketing campaign.
-
-═══════════════════════════════════════════════
-🎯 CONTENT BRIEF
-═══════════════════════════════════════════════
-MAIN MESSAGE/SUBJECT: {prompt}
-{f"BRAND: {brand_name}" if brand_name else ""}
-{f"INDUSTRY: {industry}" if industry else ""}{company_context}
-{occasion_context}
-
-═══════════════════════════════════════════════
-📝 TEXT OVERLAY REQUIREMENTS (CRITICAL!)
-═══════════════════════════════════════════════
-⚠️ ALL TEXT BELOW MUST APPEAR ON THE IMAGE EXACTLY AS SPECIFIED:
-
-{f'''
-⭐⭐⭐ MANDATORY GREETING AT TOP OF IMAGE ⭐⭐⭐
-🎊 GREETING TEXT: "{final_greeting}"
-- This greeting MUST appear at the VERY TOP of the image
-- Use large, celebratory, festive typography
-- Make it the FIRST thing viewers see
-- Position: Top-center, above the headline
-- DO NOT SKIP THIS TEXT!
-''' if final_greeting else ''}
-
-The image MUST include these text elements as overlays:
-1. {"🎊 GREETING: '" + final_greeting + "' - AT THE TOP!" if final_greeting else "No greeting required"}
-2. HEADLINE - The main message, prominently displayed (center)
-3. SUBTEXT - Supporting text below the headline  
-4. CTA (Call to Action) - Action text at the bottom
-
-⚠️ DO NOT SKIP ANY TEXT ELEMENTS! Every text mentioned in the prompt must appear on the final image.
-⚠️ {"GREETING '" + final_greeting + "' IS MANDATORY - IT MUST BE VISIBLE!" if final_greeting else ""}
-
-═══════════════════════════════════════════════
-🎨 BRAND IDENTITY
-═══════════════════════════════════════════════
-{color_scheme if color_scheme else "Use sophisticated, premium color palette"}
-VISUAL STYLE: {style_desc}
-{logo_context}
-{reference_context}
-
-═══════════════════════════════════════════════
-📐 TECHNICAL SPECIFICATIONS
-═══════════════════════════════════════════════
-- Aspect Ratio: 4:5 (Instagram optimal - 1080x1350px feel)
-- Quality: Ultra-high definition, crisp and sharp
-- Format: Ready for immediate posting
-
-═══════════════════════════════════════════════
-✨ PROFESSIONAL DESIGN REQUIREMENTS
-═══════════════════════════════════════════════
-1. SCROLL-STOPPING POWER: First 0.5 seconds must grab attention
-2. BRAND CONSISTENCY: Every element reinforces brand identity
-3. VISUAL HIERARCHY: Clear focal point with supporting elements
-4. PREMIUM QUALITY: Magazine-cover worthy aesthetics
-5. INSTAGRAM OPTIMIZED: Perfect for feed viewing
-
-COMPOSITION RULES:
-- Rule of thirds for balanced layouts
-- Strategic use of negative space
-- Eye-flow guidance toward key message
-- Balanced text-to-visual ratio if any text included
-
-QUALITY MARKERS:
-- Professional studio lighting quality
-- Rich, intentional color palette
-- Depth and dimension
-- Clean, refined edges
-- Cohesive visual storytelling
-
-{"IMPORTANT: If logo is provided, it MUST be visible and integrated professionally in the final image." if logo_path else ""}
-
-{"⚠️ CRITICAL - REFERENCE IMAGE MATCHING:" if has_reference_images else ""}
-{"The reference images provided are the GOLD STANDARD for this design." if has_reference_images else ""}
-{"Your generated image MUST look like it belongs in the SAME visual campaign." if has_reference_images else ""}
-{"Match their: color palette, design style, typography feel, mood, and quality level." if has_reference_images else ""}
-
-Create an image that:
-1. {'MATCHES the style of provided reference images' if has_reference_images else 'Looks premium and professional'}
-2. Incorporates the company context appropriately
-3. Uses brand colors effectively
-4. A Fortune 500 company would proudly post."""
-
     try:
-        model = os.getenv("IMAGE_MODEL", "gemini-3-pro-image-preview")
+        client = _get_client()
         
-        # Prepare contents - include logo and reference images if provided
+        # Build color instructions - STRONGLY emphasize brand colors
+        color_scheme = ""
+        colors_list = []
+        if brand_colors:
+            colors_list = [c.strip() for c in brand_colors.split(",") if c.strip()]
+            if colors_list:
+                primary = colors_list[0]
+                color_scheme = f"""
+COLOR PALETTE (MUST USE THESE COLORS PROMINENTLY):
+- PRIMARY COLOR: {primary} - Use this as the DOMINANT color in the image
+- This color should be visible in backgrounds, overlays, accents, or lighting
+"""
+                if len(colors_list) > 1:
+                    color_scheme += f"- SECONDARY COLORS: {', '.join(colors_list[1:4])} - Use as accents\n"
+                color_scheme += f"- The overall color mood of the image should reflect {primary}\n"
+        
+        # Style descriptions
+        style_map = {
+            'creative': 'Artistic, imaginative, visually striking',
+            'professional': 'Clean, corporate, polished',
+            'playful': 'Fun, vibrant, energetic',
+            'minimal': 'Simple, clean, focused',
+            'bold': 'Strong, impactful, attention-grabbing'
+        }
+        style_desc = style_map.get(style, style_map['creative'])
+        
+        # Extract colors from reference images if provided
+        ref_colors = []
+        ref_context = ""
+        has_refs = False
+        
+        if reference_images:
+            ref_paths = [p.strip() for p in reference_images.split(",") if p.strip() and os.path.exists(p.strip())]
+            if ref_paths:
+                has_refs = True
+                print(f"   📸 Using {len(ref_paths)} reference images")
+                for rp in ref_paths[:3]:
+                    try:
+                        colors = extract_brand_colors(rp)
+                        if colors.get("status") == "success":
+                            ref_colors.append(colors.get("dominant"))
+                            ref_colors.extend(colors.get("palette", [])[:2])
+                    except:
+                        pass
+                
+                ref_colors = list(dict.fromkeys(ref_colors))[:6]
+                ref_context = f"""
+REFERENCE IMAGES PROVIDED - Match this visual style:
+- Extracted colors: {', '.join(ref_colors) if ref_colors else 'Match reference style'}
+- Match the design style, composition, and mood from references
+- Create an image that looks like it belongs in the same campaign"""
+        
+        # Build the generation prompt with strong color emphasis
+        primary_color = colors_list[0] if colors_list else "#000000"
+        
+        full_prompt = f"""Create a premium Instagram post image for {brand_name or 'a brand'}.
+
+CONTENT DESCRIPTION: {prompt}
+
+BRAND IDENTITY:
+- Brand: {brand_name or 'Brand'}
+- Industry: {industry or 'General'}
+{f"- About: {company_overview}" if company_overview else ""}
+
+{color_scheme}
+
+VISUAL STYLE: {style_desc}
+{f"OCCASION/THEME: {occasion}" if occasion else ""}
+
+CRITICAL COLOR REQUIREMENT:
+The image MUST prominently feature the brand's primary color ({primary_color}).
+This means: 
+- Use {primary_color} in the background gradient/overlay OR
+- Use {primary_color} in prominent visual elements OR
+- Ensure the overall color mood reflects {primary_color}
+- The brand colors should be immediately recognizable
+
+TEXT ON IMAGE (MUST appear clearly and be readable):
+{f'GREETING (large, at top): "{greeting_text}"' if greeting_text else ''}
+Include ALL text elements from the prompt (headline, subtext, CTA).
+Text should contrast well with the background.
+
+{ref_context if has_refs else '''
+VISUAL APPROACH: Professional photography with real, diverse people.
+Natural lighting, authentic expressions, premium magazine quality.'''}
+
+TECHNICAL SPECIFICATIONS:
+- Aspect ratio: 4:5 (Instagram optimal)
+- Ultra high resolution and quality
+- All text must be sharp and readable
+- Brand colors must be prominently visible
+{f"- Include {brand_name} logo: Bottom-right corner, subtle but clear" if logo_path else ""}
+
+Create a scroll-stopping, on-brand, magazine-quality image that immediately evokes the brand's identity through its color palette."""
+
+        # Prepare content with images
         contents = [full_prompt]
         
-        # Add logo if provided
         if logo_path and os.path.exists(logo_path):
-            logo_image = Image.open(logo_path)
-            contents.append(logo_image)
+            try:
+                logo_image = Image.open(logo_path)
+                contents.append(logo_image)
+                print(f"   📷 Added logo: {logo_path}")
+            except Exception as e:
+                print(f"   ⚠️ Could not load logo: {e}")
         
-        # Add reference images if provided
         if reference_images:
             ref_paths = [p.strip() for p in reference_images.split(",") if p.strip()]
-            for ref_path in ref_paths:
+            for ref_path in ref_paths[:3]:  # Limit to 3 references
                 if os.path.exists(ref_path):
                     try:
                         ref_image = Image.open(ref_path)
                         contents.append(ref_image)
+                        print(f"   📷 Added reference: {ref_path}")
                     except Exception as e:
-                        print(f"Could not load reference image {ref_path}: {e}")
+                        print(f"   ⚠️ Could not load reference {ref_path}: {e}")
         
-        response = client.models.generate_content(
-            model=model,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                response_modalities=["image", "text"],
+        # Generate image with retry
+        model = os.getenv("IMAGE_MODEL", "gemini-2.0-flash-exp")
+        
+        def make_request():
+            return client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_modalities=["image", "text"],
+                )
             )
-        )
         
-        # Create output directory
+        response = _retry_with_backoff(make_request)
+        
+        # Save the generated image
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
-        # Process response and save image
         for part in response.candidates[0].content.parts:
             if part.inline_data is not None:
                 image_id = str(uuid.uuid4())[:8]
@@ -414,9 +299,10 @@ Create an image that:
                 filename = f"post_{timestamp}_{image_id}.png"
                 image_path = output_path / filename
                 
-                # Save the image
                 with open(image_path, "wb") as f:
                     f.write(part.inline_data.data)
+                
+                print(f"   ✅ Image saved: {image_path}")
                 
                 return {
                     "status": "success",
@@ -428,10 +314,13 @@ Create an image that:
                     "model": model
                 }
         
-        return {"status": "error", "message": "No image was generated in the response"}
+        return {
+            "status": "error",
+            "message": "No image was generated. Try adjusting your prompt."
+        }
             
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return _format_error(e, "Try simplifying your design request.")
 
 
 def edit_post_image(
@@ -444,40 +333,43 @@ def edit_post_image(
     
     Args:
         original_image_path: Path to the original image
-        edit_instruction: What changes to make (e.g., "change background to blue")
+        edit_instruction: What changes to make
         output_dir: Directory to save edited images
         
     Returns:
         Dictionary with new image path and edit details
     """
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return {"status": "error", "message": "No API key found"}
+    print(f"✏️ Editing image: {original_image_path}")
+    print(f"   Instruction: {edit_instruction[:50]}...")
     
-    if not os.path.exists(original_image_path):
-        return {"status": "error", "message": f"Original image not found: {original_image_path}"}
-    
-    client = genai.Client(api_key=api_key)
-    
-    edit_prompt = f"""Edit this image with the following changes:
+    try:
+        client = _get_client()
+        
+        if not os.path.exists(original_image_path):
+            return {
+                "status": "error",
+                "message": f"Original image not found: {original_image_path}"
+            }
+        
+        edit_prompt = f"""Edit this image with the following changes:
 {edit_instruction}
 
-Keep the overall quality and style of the image while making the requested modifications.
+Keep the overall quality and brand feel while making the requested modifications.
 Maintain professional, high-quality output suitable for Instagram."""
 
-    try:
-        model = os.getenv("IMAGE_MODEL", "gemini-3-pro-image-preview")
-        
-        # Load original image
         original_image = Image.open(original_image_path)
+        model = os.getenv("IMAGE_MODEL", "gemini-2.0-flash-exp")
         
-        response = client.models.generate_content(
-            model=model,
-            contents=[edit_prompt, original_image],
-            config=types.GenerateContentConfig(
-                response_modalities=["image", "text"],
+        def make_request():
+            return client.models.generate_content(
+                model=model,
+                contents=[edit_prompt, original_image],
+                config=types.GenerateContentConfig(
+                    response_modalities=["image", "text"],
+                )
             )
-        )
+        
+        response = _retry_with_backoff(make_request)
         
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -492,6 +384,8 @@ Maintain professional, high-quality output suitable for Instagram."""
                 with open(image_path, "wb") as f:
                     f.write(part.inline_data.data)
                 
+                print(f"   ✅ Edited image saved: {image_path}")
+                
                 return {
                     "status": "success",
                     "image_path": str(image_path),
@@ -501,10 +395,13 @@ Maintain professional, high-quality output suitable for Instagram."""
                     "original_image": original_image_path
                 }
         
-        return {"status": "error", "message": "No edited image was generated"}
+        return {
+            "status": "error",
+            "message": "Could not generate edited image. Try different edit instructions."
+        }
             
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return _format_error(e, "Try simpler edit instructions.")
 
 
 def animate_image(
@@ -514,146 +411,113 @@ def animate_image(
     output_dir: str = "generated"
 ) -> dict:
     """
-    Animate a static image to create a short video/cinemagraph (Motion Canvas feature).
+    Animate a static image to create a short video/cinemagraph.
     
-    This converts a static social media post into a dynamic, attention-grabbing video
-    perfect for Instagram Reels, TikTok, or animated posts.
+    NOTE: Video generation model availability varies by region/account.
+    Falls back to helpful guidance if unavailable.
     
     Args:
         image_path: Path to the static image to animate
-        motion_prompt: Description of desired motion (e.g., "steam rising from cup", 
-                      "background lights twinkling", "subtle zoom on product", 
-                      "gentle camera pan left to right")
-        duration_seconds: Length of video in seconds (3-8 seconds recommended for social)
+        motion_prompt: Description of desired motion
+        duration_seconds: Length of video (3-8 seconds recommended)
         output_dir: Directory to save the generated video
         
     Returns:
-        Dictionary with video path, URL, and animation details
-        
-    Example motion prompts:
-    - "Make the steam rise gently from the coffee cup"
-    - "Add subtle sparkle/twinkle effects to the background"
-    - "Slow zoom in on the main subject"
-    - "Gentle parallax effect with foreground and background"
-    - "Make the logo pulse subtly"
-    - "Add floating hearts/confetti for Valentine's theme"
+        Dictionary with video path or guidance for alternatives
     """
-    print(f"🎬 animate_image called:")
-    print(f"   - image_path: {image_path}")
-    print(f"   - motion_prompt: {motion_prompt}")
-    print(f"   - duration: {duration_seconds}s")
+    print(f"🎬 Animating image: {image_path}")
+    print(f"   Motion: {motion_prompt[:50]}...")
     
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return {"status": "error", "message": "No API key found. Set GEMINI_API_KEY environment variable."}
-    
-    if not os.path.exists(image_path):
-        return {"status": "error", "message": f"Image not found: {image_path}"}
-    
-    client = genai.Client(api_key=api_key)
-    
-    # Build the animation prompt
-    animation_prompt = f"""Create a short, looping video animation based on this image.
-
-MOTION INSTRUCTIONS:
-{motion_prompt}
-
-ANIMATION GUIDELINES:
-- Duration: {duration_seconds} seconds
-- Create smooth, seamless motion that loops well
-- Maintain the original image quality and composition
-- Keep brand elements (logo, text) stable and clear
-- Add subtle, professional motion that enhances engagement
-- Suitable for Instagram Reels/Stories format
-
-MOTION STYLE:
-- Cinemagraph-style: Only specific elements should move
-- Keep the overall composition stable
-- Avoid jarring or distracting motion
-- Aim for premium, polished feel
-
-OUTPUT: A high-quality MP4 video that makes this static post come alive."""
-
     try:
-        # Try using Veo model for video generation
-        video_model = os.getenv("VIDEO_MODEL", "veo-2.0-generate-001")
+        client = _get_client()
         
-        # Load the source image
+        if not os.path.exists(image_path):
+            return {
+                "status": "error",
+                "message": f"Image not found: {image_path}"
+            }
+        
+        animation_prompt = f"""Create a short, looping video animation from this image.
+
+MOTION: {motion_prompt}
+
+GUIDELINES:
+- Duration: {duration_seconds} seconds
+- Smooth, seamless loop
+- Keep brand elements (logo, text) stable
+- Subtle, professional motion
+- Perfect for Instagram Reels/Stories"""
+
+        video_model = os.getenv("VIDEO_MODEL", "veo-2.0-generate-001")
         source_image = Image.open(image_path)
         
-        # Try video generation
-        response = client.models.generate_content(
-            model=video_model,
-            contents=[animation_prompt, source_image],
-            config=types.GenerateContentConfig(
-                response_modalities=["video"],
+        def make_request():
+            return client.models.generate_content(
+                model=video_model,
+                contents=[animation_prompt, source_image],
+                config=types.GenerateContentConfig(
+                    response_modalities=["video"],
+                )
             )
-        )
         
-        # Create output directory
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+        try:
+            response = _retry_with_backoff(make_request, max_retries=2)
+            
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            
+            for part in response.candidates[0].content.parts:
+                if part.inline_data is not None and "video" in part.inline_data.mime_type:
+                    video_id = str(uuid.uuid4())[:8]
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    filename = f"animated_{timestamp}_{video_id}.mp4"
+                    video_path = output_path / filename
+                    
+                    with open(video_path, "wb") as f:
+                        f.write(part.inline_data.data)
+                    
+                    print(f"   ✅ Video saved: {video_path}")
+                    
+                    return {
+                        "status": "success",
+                        "video_path": str(video_path),
+                        "filename": filename,
+                        "url": f"/generated/{filename}",
+                        "motion_prompt": motion_prompt,
+                        "duration_seconds": duration_seconds,
+                        "source_image": image_path,
+                        "type": "video"
+                    }
         
-        # Process response and save video
-        for part in response.candidates[0].content.parts:
-            if part.inline_data is not None and "video" in part.inline_data.mime_type:
-                video_id = str(uuid.uuid4())[:8]
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                filename = f"animated_{timestamp}_{video_id}.mp4"
-                video_path = output_path / filename
-                
-                # Save the video
-                with open(video_path, "wb") as f:
-                    f.write(part.inline_data.data)
-                
-                print(f"✅ Video saved: {video_path}")
-                
+        except Exception as model_error:
+            error_str = str(model_error).lower()
+            if "not found" in error_str or "invalid" in error_str or "unavailable" in error_str:
+                # Model not available - provide helpful alternatives
                 return {
-                    "status": "success",
-                    "video_path": str(video_path),
-                    "filename": filename,
-                    "url": f"/generated/{filename}",
-                    "motion_prompt": motion_prompt,
-                    "duration_seconds": duration_seconds,
+                    "status": "model_unavailable",
+                    "message": "Video generation is not available in your region/account.",
                     "source_image": image_path,
-                    "model": video_model,
-                    "type": "video"
+                    "motion_prompt": motion_prompt,
+                    "alternatives": [
+                        "Runway ML (runwayml.com) - Image to Video",
+                        "Pika Labs (pika.art) - Motion generation",
+                        "Kaiber AI - Image animation",
+                        "LeiaPix - 3D depth animation"
+                    ],
+                    "export_data": {
+                        "image_path": image_path,
+                        "motion_instructions": motion_prompt,
+                        "duration": f"{duration_seconds} seconds"
+                    }
                 }
-        
-        # If video generation not available, try alternative approach
-        # Using image model with motion simulation
-        print("⚠️ Video model response empty, trying alternative approach...")
+            raise
         
         return {
             "status": "partial",
-            "message": "Video generation is being processed. The animated version will be available shortly.",
+            "message": "Animation processing. The result will be available shortly.",
             "source_image": image_path,
-            "motion_prompt": motion_prompt,
-            "suggestion": "You can also use external tools like Runway ML or Pika Labs to animate this image with the motion prompt provided."
+            "motion_prompt": motion_prompt
         }
             
     except Exception as e:
-        error_msg = str(e)
-        print(f"❌ Animation error: {error_msg}")
-        
-        # Check if it's a model availability issue
-        if "not found" in error_msg.lower() or "invalid" in error_msg.lower():
-            return {
-                "status": "model_unavailable",
-                "message": "Video generation model is not available in your region/account. Try using an external tool.",
-                "source_image": image_path,
-                "motion_prompt": motion_prompt,
-                "alternatives": [
-                    "Runway ML (runwayml.com) - Image to Video",
-                    "Pika Labs (pika.art) - Motion generation",
-                    "Kaiber AI - Image animation",
-                    "LeiaPix - 3D depth animation"
-                ],
-                "export_data": {
-                    "image_path": image_path,
-                    "motion_instructions": motion_prompt,
-                    "duration": f"{duration_seconds} seconds"
-                }
-            }
-        
-        return {"status": "error", "message": error_msg}
+        return _format_error(e, "Video generation may not be available in your region.")

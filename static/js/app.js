@@ -30,6 +30,7 @@ class ContentStudioApp {
             selectedPalette: null,
             referenceImages: [],
             scrapedImages: [],
+            scrapedBrandInfo: null,  // Brand info extracted from URL
             numImages: 1
         };
         
@@ -292,12 +293,105 @@ class ContentStudioApp {
     
     async initSession() {
         try {
+            // Check if we have a saved session
+            const savedSession = localStorage.getItem('content_studio_session');
+            const savedMessages = localStorage.getItem('content_studio_messages');
+            
+            if (savedSession) {
+                // Try to resume the existing session
+                const sessionData = JSON.parse(savedSession);
+                const response = await fetch(`/sessions/${sessionData.session_id}`, { method: 'GET' });
+                
+                if (response.ok) {
+                    // Session still valid, restore it
+                    this.sessionId = sessionData.session_id;
+                    
+                    // Restore chat messages (already formatted HTML)
+                    if (savedMessages) {
+                        const messages = JSON.parse(savedMessages);
+                        messages.forEach(msg => {
+                            // Pass isPreformatted=true since content is already HTML
+                            this.addMessage(msg.content, msg.role === 'user' ? 'user' : 'assistant', false, true);
+                        });
+                    }
+                    
+                    // Restore generated images
+                    this.restoreImagesFromStorage();
+                    
+                    console.log('Session restored:', this.sessionId);
+                    return;
+                }
+            }
+            
+            // Create a new session
             const response = await fetch('/sessions', { method: 'POST' });
             const data = await response.json();
             this.sessionId = data.session_id;
+            
+            // Save to localStorage
+            localStorage.setItem('content_studio_session', JSON.stringify({
+                session_id: this.sessionId,
+                created: Date.now()
+            }));
+            localStorage.removeItem('content_studio_messages'); // Clear old messages for new session
+            
         } catch (error) {
+            console.error('Session init error:', error);
             this.sessionId = 'fallback-' + Date.now();
         }
+    }
+    
+    // Save messages to localStorage for persistence
+    saveMessagesToStorage() {
+        const messages = [];
+        this.chatMessages.querySelectorAll('.message').forEach(msg => {
+            const isUser = msg.classList.contains('user');
+            const content = msg.querySelector('.message-text')?.innerHTML || '';
+            if (content) {
+                messages.push({ role: isUser ? 'user' : 'assistant', content });
+            }
+        });
+        localStorage.setItem('content_studio_messages', JSON.stringify(messages));
+    }
+    
+    // Save generated images to localStorage for persistence
+    saveImagesToStorage() {
+        localStorage.setItem('content_studio_images', JSON.stringify(this.generatedImages));
+    }
+    
+    // Restore generated images from localStorage
+    restoreImagesFromStorage() {
+        const savedImages = localStorage.getItem('content_studio_images');
+        if (savedImages) {
+            try {
+                const images = JSON.parse(savedImages);
+                if (images && images.length > 0) {
+                    this.generatedImages = [];
+                    images.forEach(imgUrl => {
+                        if (!this.generatedImages.includes(imgUrl)) {
+                            this.generatedImages.push(imgUrl);
+                            this.addImageToGallery(imgUrl);
+                        }
+                    });
+                }
+            } catch (e) {
+                console.error('Failed to restore images:', e);
+            }
+        }
+    }
+    
+    // Clear session and start fresh
+    clearSession() {
+        localStorage.removeItem('content_studio_session');
+        localStorage.removeItem('content_studio_messages');
+        localStorage.removeItem('content_studio_images');
+        this.sessionId = null;
+        this.chatMessages.innerHTML = '';
+        this.generatedImages = [];
+        this.contentGrid.innerHTML = '';
+        this.emptyState.hidden = false;
+        this.contentGrid.hidden = true;
+        this.initSession();
     }
     
     switchTab(tabName) {
@@ -658,7 +752,26 @@ class ContentStudioApp {
             
             const data = await response.json();
             
-            if (data.success && data.images && data.images.length > 0) {
+            // Store brand info if extracted
+            if (data.brand_info && data.brand_info.status === 'success') {
+                this.brandConfig.scrapedBrandInfo = data.brand_info;
+                console.log('📊 Brand info extracted:', data.brand_info);
+                
+                // Auto-fill company name if empty
+                const brandName = data.brand_info.brand_info?.name;
+                if (brandName && !this.companyNameInput.value) {
+                    this.companyNameInput.value = brandName;
+                    this.brandConfig.companyName = brandName;
+                }
+                
+                // Use extracted colors if no palette selected
+                const extractedColors = data.brand_info.brand_info?.extracted_colors;
+                if (extractedColors && extractedColors.length > 0 && !this.brandConfig.selectedPalette) {
+                    console.log('🎨 Using extracted colors:', extractedColors);
+                }
+            }
+            
+            if (data.images && data.images.length > 0) {
                 this.brandConfig.scrapedImages = data.images;
                 this.renderScrapedImages();
                 
@@ -674,8 +787,17 @@ class ContentStudioApp {
                     }
                 });
                 this.renderReferencePreviews();
+            }
+            
+            // Show appropriate message
+            if (data.success) {
+                if (data.images?.length > 0) {
+                    console.log(`✅ Scraped ${data.images.length} images and brand info`);
+                } else {
+                    alert(data.message || 'Brand info saved. Please upload reference images manually.');
+                }
             } else {
-                alert(data.message || 'Could not fetch images from this profile. The profile may be private or unavailable.');
+                alert(data.message || 'Could not fetch from this URL. Please try again.');
             }
         } catch (error) {
             console.error('Error scraping Instagram:', error);
@@ -805,7 +927,23 @@ class ContentStudioApp {
         }
         
         if (this.brandConfig.instagramLink) {
-            brandInfo += `\n- Instagram Reference: ${this.brandConfig.instagramLink}`;
+            brandInfo += `\n- Reference URL: ${this.brandConfig.instagramLink}`;
+        }
+        
+        // Include scraped brand info if available
+        if (this.brandConfig.scrapedBrandInfo) {
+            const scrapedInfo = this.brandConfig.scrapedBrandInfo;
+            if (scrapedInfo.brand_info) {
+                const bi = scrapedInfo.brand_info;
+                brandInfo += `\n\n**Extracted Brand Details from ${scrapedInfo.source || 'web'}:**`;
+                if (bi.description) brandInfo += `\n- About: ${bi.description}`;
+                if (bi.extracted_colors?.length) brandInfo += `\n- Colors found: ${bi.extracted_colors.join(', ')}`;
+                if (bi.keywords?.length) brandInfo += `\n- Keywords: ${bi.keywords.join(', ')}`;
+            }
+            if (scrapedInfo.style_hints) {
+                const sh = scrapedInfo.style_hints;
+                brandInfo += `\n- Recommended tone: ${sh.recommended_tone || 'professional'}`;
+            }
         }
         
         brandInfo += `\n\nBrand setup complete. Ready for content creation.`;
@@ -836,6 +974,14 @@ class ContentStudioApp {
             attachments.push({
                 type: 'company_overview',
                 content: this.brandConfig.companyOverview
+            });
+        }
+        
+        // Add scraped brand info
+        if (this.brandConfig.scrapedBrandInfo) {
+            attachments.push({
+                type: 'scraped_brand_info',
+                data: this.brandConfig.scrapedBrandInfo
             });
         }
         
@@ -931,6 +1077,7 @@ class ContentStudioApp {
     showProcessingIndicator() {
         this.isProcessing = true;
         this.processingSteps = [];
+        this.processingStartTime = Date.now();
         
         // Disable input
         const inputWrapper = document.querySelector('.chat-input-wrapper');
@@ -949,33 +1096,55 @@ class ContentStudioApp {
                     <span class="processing-dots"><span></span><span></span><span></span></span>
                 </div>
                 <div class="processing-subtitle" id="processingStatus">Starting up...</div>
+                <div class="processing-progress">
+                    <div class="progress-bar" id="processingProgressBar"></div>
+                </div>
                 <div class="processing-steps" id="processingSteps"></div>
+                <div class="processing-time" id="processingTime">0s</div>
             </div>
         `;
         this.chatMessages.appendChild(processingDiv);
         this.scrollToBottom();
         
-        // Start cycling through status messages
+        // Start cycling through status messages and update timer
         this.startStatusCycle();
+        this.startTimeTracker();
     }
     
     startStatusCycle() {
         const statuses = [
-            'Analyzing your request...',
-            'Processing with AI...',
-            'Generating content...',
-            'Working on it...',
-            'Almost there...'
+            { text: 'Analyzing your request...', progress: 10 },
+            { text: 'Understanding context...', progress: 20 },
+            { text: 'Planning response...', progress: 35 },
+            { text: 'Generating content...', progress: 50 },
+            { text: 'Creating visuals...', progress: 65 },
+            { text: 'Refining output...', progress: 80 },
+            { text: 'Almost there...', progress: 90 },
         ];
         let index = 0;
         
         this.statusInterval = setInterval(() => {
             const statusEl = document.getElementById('processingStatus');
+            const progressBar = document.getElementById('processingProgressBar');
             if (statusEl && this.isProcessing) {
-                statusEl.textContent = statuses[index % statuses.length];
-                index++;
+                const status = statuses[Math.min(index, statuses.length - 1)];
+                statusEl.textContent = status.text;
+                if (progressBar) {
+                    progressBar.style.width = `${status.progress}%`;
+                }
+                if (index < statuses.length - 1) index++;
             }
-        }, 3000);
+        }, 2500);
+    }
+    
+    startTimeTracker() {
+        this.timeInterval = setInterval(() => {
+            const timeEl = document.getElementById('processingTime');
+            if (timeEl && this.isProcessing) {
+                const elapsed = Math.floor((Date.now() - this.processingStartTime) / 1000);
+                timeEl.textContent = `${elapsed}s`;
+            }
+        }, 1000);
     }
     
     updateProcessingStatus(status, tool = null) {
@@ -1003,6 +1172,12 @@ class ContentStudioApp {
         if (this.statusInterval) {
             clearInterval(this.statusInterval);
             this.statusInterval = null;
+        }
+        
+        // Clear time tracker
+        if (this.timeInterval) {
+            clearInterval(this.timeInterval);
+            this.timeInterval = null;
         }
         
         // Re-enable input
@@ -1062,7 +1237,7 @@ class ContentStudioApp {
         }
     }
     
-    addMessage(text, role, isStreaming = false) {
+    addMessage(text, role, isStreaming = false, isPreformatted = false) {
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${role}`;
         
@@ -1077,7 +1252,8 @@ class ContentStudioApp {
         
         const textDiv = document.createElement('div');
         textDiv.className = 'message-text';
-        textDiv.innerHTML = this.formatMessage(text);
+        // If preformatted (restored from storage), use as-is; otherwise format
+        textDiv.innerHTML = isPreformatted ? text : this.formatMessage(text);
         
         content.appendChild(textDiv);
         messageDiv.appendChild(avatar);
@@ -1086,16 +1262,28 @@ class ContentStudioApp {
         this.chatMessages.appendChild(messageDiv);
         this.scrollToBottom();
         
+        // Save to localStorage (but not for streaming messages which are updated later)
+        if (!isStreaming) {
+            this.saveMessagesToStorage();
+        }
+        
         return textDiv;
     }
     
     updateMessage(element, text) {
         element.innerHTML = this.formatMessage(text);
         this.scrollToBottom();
+        // Save updated message to storage
+        this.saveMessagesToStorage();
     }
     
     formatMessage(text) {
         if (!text) return '';
+        
+        // Skip if already contains image-link (already formatted)
+        if (text.includes('class="image-link"')) {
+            return text;
+        }
         
         // Process image links FIRST (before code blocks), handling various formats:
         // - /generated/file.png
@@ -1104,9 +1292,12 @@ class ContentStudioApp {
         // - `/generated/file.png`
         let formatted = text
             // Remove backticks around image paths first
-            .replace(/`((?:\/)?generated\/[^\s\`]+\.png)`/g, '$1')
-            // Then convert image paths to clickable links
-            .replace(/(?:\/)?generated\/([^\s\<\>\"\'\)\`]+\.png)/g, '<a href="/generated/$1" class="image-link" data-image="/generated/$1">📷 View Image</a>');
+            .replace(/`((?:\/)?generated\/[^\s\`]+\.png)`/g, '$1');
+        
+        // Only convert paths that aren't already in HTML tags (not preceded by href=" or data-image=")
+        // Use a more specific pattern that only matches standalone paths
+        formatted = formatted.replace(/(?<!["\=])(?:\/)?generated\/(post_[a-zA-Z0-9_]+\.png)/g, 
+            '<a href="/generated/$1" class="image-link" data-image="/generated/$1">📷 View Image</a>');
         
         // Then process other formatting
         return formatted
@@ -1734,31 +1925,62 @@ class ContentStudioApp {
     }
     
     parseAssistantResponse(text) {
+        console.log('🔍 Parsing assistant response for images...');
+        console.log('📝 Response text:', text.substring(0, 500));
+        
         // Parse image-caption pairs from the response
         const imageCaptionPairs = this.extractImageCaptionPairs(text);
+        
+        console.log('📋 Image-caption pairs found:', imageCaptionPairs.length);
         
         if (imageCaptionPairs.length > 0) {
             // Add images with their associated captions
             imageCaptionPairs.forEach(pair => {
+                console.log('🖼️ Pair:', pair.image, 'Caption:', pair.caption?.substring(0, 50));
                 if (!this.generatedImages.includes(pair.image)) {
                     this.generatedImages.push(pair.image);
                     this.addImageToGalleryWithCaption(pair.image, pair.caption, pair.hashtags);
+                    this.saveImagesToStorage();
                 }
             });
         } else {
             // Fallback: Check for generated images without caption association
-            const imagePattern = /(?:\/)?generated\/[^\s\)\"\'\`<>]+\.png/g;
-            const matches = text.match(imagePattern);
+            // Multiple patterns to catch different formats
+            const patterns = [
+                /\*\*Image:\*\*\s*(\/generated\/[^\s\n]+\.png)/gi,  // **Image:** /generated/xxx.png
+                /\/generated\/post_[a-zA-Z0-9_]+\.png/g,  // /generated/post_xxx.png (specific)
+                /\/generated\/[a-zA-Z0-9_-]+\.png/g,  // /generated/xxx.png (general)
+                /generated\/[a-zA-Z0-9_-]+\.png/g,    // Without leading slash
+                /\(\/generated\/[^)]+\.png\)/g,       // Markdown image: ![](url)
+            ];
             
-            if (matches) {
-                const images = matches.map(path => path.startsWith('/') ? path : '/' + path);
-                images.forEach(imgPath => {
-                    if (!this.generatedImages.includes(imgPath)) {
-                        this.generatedImages.push(imgPath);
-                        this.addImageToGallery(imgPath);
-                    }
-                });
-            }
+            const allMatches = new Set();
+            patterns.forEach(pattern => {
+                const matches = text.match(pattern);
+                if (matches) {
+                    matches.forEach(match => {
+                        // Clean up the match - remove markdown syntax and **Image:** prefix
+                        let cleanPath = match.replace(/\*\*Image:\*\*\s*/gi, '').replace(/[\(\)]/g, '').trim();
+                        if (!cleanPath.startsWith('/')) {
+                            cleanPath = '/' + cleanPath;
+                        }
+                        // Validate it looks like an image path
+                        if (cleanPath.includes('/generated/') && cleanPath.endsWith('.png')) {
+                            allMatches.add(cleanPath);
+                        }
+                    });
+                }
+            });
+            
+            console.log('🖼️ Found images (fallback):', Array.from(allMatches));
+            allMatches.forEach(imgPath => {
+                if (!this.generatedImages.includes(imgPath)) {
+                    console.log('➕ Adding image to gallery:', imgPath);
+                    this.generatedImages.push(imgPath);
+                    this.addImageToGallery(imgPath);
+                    this.saveImagesToStorage();
+                }
+            });
         }
         
         // Check for generated videos (animated content)
@@ -1771,6 +1993,7 @@ class ContentStudioApp {
                 if (!this.generatedImages.includes(videoPath)) {
                     this.generatedImages.push(videoPath);
                     this.addImageToGallery(videoPath);
+                    this.saveImagesToStorage();
                 }
             });
         }
@@ -2166,20 +2389,48 @@ class ContentStudioApp {
     }
     
     async refreshGallery() {
+        // Only refresh the current session's images, not all images from server
+        // This re-renders the gallery with the images we already have in memory
+        if (this.generatedImages.length > 0) {
+            this.contentGrid.innerHTML = '';
+            this.emptyState.hidden = true;
+            this.contentGrid.hidden = false;
+            this.galleryActions.hidden = false;
+            
+            // Re-add all session images
+            const imagesToReAdd = [...this.generatedImages];
+            this.generatedImages = [];
+            
+            imagesToReAdd.forEach(imgUrl => {
+                this.generatedImages.push(imgUrl);
+                this.addImageToGallery(imgUrl);
+            });
+        }
+    }
+    
+    // Load all images from server (only if user explicitly requests)
+    async loadAllImages() {
         try {
-            const response = await fetch('/generated-images');
+            const response = await fetch('/generated-images?limit=20');
             const data = await response.json();
             
             if (data.images && data.images.length > 0) {
                 this.contentGrid.innerHTML = '';
                 this.generatedImages = [];
+                this.emptyState.hidden = true;
+                this.contentGrid.hidden = false;
+                this.galleryActions.hidden = false;
                 
                 data.images.forEach(img => {
-                    this.generatedImages.push(img.url);
-                    this.addImageToGallery(img.url);
+                    if (!this.generatedImages.includes(img.url)) {
+                        this.generatedImages.push(img.url);
+                        this.addImageToGallery(img.url);
+                    }
                 });
             }
-        } catch (error) {}
+        } catch (error) {
+            console.error('Failed to load images:', error);
+        }
     }
     
     // Switch gallery view between all, posts, and campaigns

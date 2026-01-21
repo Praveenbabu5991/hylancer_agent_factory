@@ -1,12 +1,54 @@
-"""Content creation tools for captions and hashtags."""
+"""
+Content Creation Tools for captions and hashtags.
+
+Provides caption writing, hashtag generation, and content optimization
+with proper error handling.
+"""
 
 import os
+import time
 from typing import Any
 
 from google import genai
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _get_client():
+    """Get Gemini client with validation."""
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("API key not configured. Please set GOOGLE_API_KEY.")
+    return genai.Client(api_key=api_key)
+
+
+def _retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0):
+    """Execute function with exponential backoff retry."""
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                time.sleep(delay)
+    raise last_error
+
+
+def _format_error(error: Exception) -> dict:
+    """Format error into user-friendly response."""
+    error_str = str(error).lower()
+    
+    if "quota" in error_str or "rate" in error_str:
+        message = "Service is busy. Please try again in a moment."
+    elif "api" in error_str:
+        message = "Service configuration issue. Please contact support."
+    else:
+        message = "Could not generate content. Please try again."
+    
+    return {"status": "error", "message": message, "technical_details": str(error)}
 
 
 def write_caption(
@@ -16,7 +58,7 @@ def write_caption(
     key_message: str = "",
     occasion: str = "",
     tone: str = "engaging",
-    max_length: int = 2200,
+    max_length: int = 500,
     include_cta: bool = True,
     emoji_level: str = "moderate",
     company_overview: str = "",
@@ -36,76 +78,69 @@ def write_caption(
         max_length: Maximum character length
         include_cta: Include call-to-action
         emoji_level: none, minimal, moderate, heavy
-        company_overview: Description of what the company does (for context)
+        company_overview: Description of what the company does
         brand_name: Name of the brand
         image_description: Description of the image this caption is for
         
     Returns:
         Dictionary with generated caption
     """
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return {"status": "error", "message": "No API key found"}
-    
-    client = genai.Client(api_key=api_key)
-    
-    emoji_instruction = {
-        "none": "Do not use any emojis.",
-        "minimal": "Use 1-2 emojis strategically.",
-        "moderate": "Use 3-5 emojis to enhance the message.",
-        "heavy": "Use emojis liberally throughout."
-    }.get(emoji_level, "Use emojis moderately.")
-    
-    # Build company context
-    company_context = ""
-    if company_overview:
-        company_context = f"\n**About the Company:** {company_overview}"
-    if brand_name:
-        company_context = f"\n**Brand Name:** {brand_name}" + company_context
-    
-    # Add image context if provided
-    image_context = ""
-    if image_description:
-        image_context = f"\n**This caption is for an image showing:** {image_description}"
-    
-    prompt = f"""Write a SHORT, CRISP Instagram caption for the following:
+    try:
+        client = _get_client()
+        
+        emoji_map = {
+            "none": "Do not use any emojis.",
+            "minimal": "Use 1-2 emojis strategically.",
+            "moderate": "Use 3-5 emojis to enhance the message.",
+            "heavy": "Use emojis liberally throughout."
+        }
+        emoji_instruction = emoji_map.get(emoji_level, emoji_map["moderate"])
+        
+        # Build context
+        context_parts = []
+        if brand_name:
+            context_parts.append(f"Brand: {brand_name}")
+        if company_overview:
+            context_parts.append(f"About: {company_overview}")
+        context = "\n".join(context_parts)
+        
+        prompt = f"""Write a SHORT Instagram caption (50-150 words max):
 
 **Topic:** {topic}
 **Brand Voice:** {brand_voice}
-**Target Audience:** {target_audience}
-**Key Message:** {key_message or "Engage and connect with the audience"}
+**Audience:** {target_audience}
+**Message:** {key_message or "Engage and connect"}
 **Occasion:** {occasion or "Regular post"}
-**Tone:** {tone}{company_context}{image_context}
+**Tone:** {tone}
+{context}
+{f"**Image shows:** {image_description}" if image_description else ""}
 
-**CRITICAL REQUIREMENTS - KEEP IT SHORT:**
-- Total length: 50-150 words MAXIMUM (around 3-5 sentences)
+**REQUIREMENTS:**
+- 50-150 words MAXIMUM
 - First line = attention-grabbing HOOK
-- 1-2 sentences of core message
-- End with ONE clear call-to-action
+- 1-2 sentences of value
+- {"End with clear CTA" if include_cta else "No CTA needed"}
 - {emoji_instruction}
 - Easy to copy-paste to Instagram
 
 **FORMAT:**
 [Hook line]
 
-[1-2 sentences of value]
+[Value content]
 
-[Simple CTA] 👇
+[CTA if applicable] 👇
 
-**DON'T:**
-- Write long paragraphs
-- Exceed 150 words
-- Be overly promotional
-- Use too many emojis
+Write ONLY the caption text:"""
 
-Write ONLY the caption text, nothing else:"""
-
-    try:
-        response = client.models.generate_content(
-            model=os.getenv("DEFAULT_MODEL", "gemini-2.5-flash"),
-            contents=prompt
-        )
-        caption = response.text.strip()
+        def make_request():
+            response = client.models.generate_content(
+                model=os.getenv("DEFAULT_MODEL", "gemini-2.5-flash"),
+                contents=prompt
+            )
+            return response.text.strip()
+        
+        caption = _retry_with_backoff(make_request)
+        
         return {
             "status": "success",
             "caption": caption,
@@ -114,7 +149,7 @@ Write ONLY the caption text, nothing else:"""
             "tone": tone
         }
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return _format_error(e)
 
 
 def generate_hashtags(
@@ -122,7 +157,7 @@ def generate_hashtags(
     niche: str = "",
     brand_name: str = "",
     trending_context: str = "",
-    max_hashtags: int = 30
+    max_hashtags: int = 15
 ) -> dict:
     """
     Generate relevant hashtags for an Instagram post.
@@ -132,47 +167,46 @@ def generate_hashtags(
         niche: Industry/niche for targeted hashtags
         brand_name: Brand name for branded hashtag
         trending_context: Any trending topics to incorporate
-        max_hashtags: Maximum number of hashtags
+        max_hashtags: Maximum number of hashtags (default 15)
         
     Returns:
         Dictionary with hashtags
     """
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return {"status": "error", "message": "No API key found"}
-    
-    client = genai.Client(api_key=api_key)
-    
-    prompt = f"""Generate {max_hashtags} strategic Instagram hashtags for a post about:
+    try:
+        client = _get_client()
+        
+        prompt = f"""Generate {max_hashtags} strategic Instagram hashtags for:
 
 **Topic:** {topic}
-**Niche/Industry:** {niche or "general"}
-**Brand Name:** {brand_name or "N/A"}
-**Trending Context:** {trending_context or "None specified"}
+**Niche:** {niche or "general"}
+**Brand:** {brand_name or "N/A"}
+{f"**Trending:** {trending_context}" if trending_context else ""}
 
-**Hashtag Strategy:**
-- Mix of high-volume (1M+ posts) and niche-specific tags
-- Include 2-3 branded hashtags if brand name provided
-- Add relevant trending hashtags
-- Include community hashtags
-- Mix different reach levels for optimal discovery
+**Strategy:**
+- Mix high-volume (1M+ posts) and niche-specific tags
+- Include 1-2 branded hashtags if brand name provided
+- Mix different reach levels for discovery
+- Relevant to the specific topic
 
 Return ONLY hashtags, one per line, each starting with #:"""
 
-    try:
-        response = client.models.generate_content(
-            model=os.getenv("DEFAULT_MODEL", "gemini-2.5-flash"),
-            contents=prompt
-        )
+        def make_request():
+            response = client.models.generate_content(
+                model=os.getenv("DEFAULT_MODEL", "gemini-2.5-flash"),
+                contents=prompt
+            )
+            return response.text.strip()
         
-        # Parse hashtags from response
+        result = _retry_with_backoff(make_request)
+        
+        # Parse and clean hashtags
         hashtags = []
-        for line in response.text.strip().split("\n"):
+        for line in result.split("\n"):
             line = line.strip()
             if line.startswith("#"):
-                # Clean up the hashtag
+                # Clean the hashtag
                 tag = ''.join(c for c in line.split()[0] if c.isalnum() or c == '#')
-                if tag and tag != "#":
+                if tag and tag != "#" and len(tag) > 1:
                     hashtags.append(tag)
         
         # Remove duplicates while preserving order
@@ -186,7 +220,7 @@ Return ONLY hashtags, one per line, each starting with #:"""
             "topic": topic
         }
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return _format_error(e)
 
 
 def improve_caption(
@@ -205,34 +239,34 @@ def improve_caption(
     Returns:
         Dictionary with improved caption
     """
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        return {"status": "error", "message": "No API key found"}
-    
-    client = genai.Client(api_key=api_key)
-    
-    prompt = f"""Improve this Instagram caption based on the feedback:
+    try:
+        client = _get_client()
+        
+        prompt = f"""Improve this Instagram caption based on feedback:
 
-**Original Caption:**
+**Original:**
 {original_caption}
 
-**Feedback/Changes Requested:**
+**Feedback:**
 {feedback}
 
 **Instructions:**
-- {"Maintain the same overall tone and voice" if preserve_tone else "Adjust tone as needed"}
+- {"Maintain the same tone and voice" if preserve_tone else "Adjust tone as needed"}
 - Keep it engaging and authentic
-- Ensure it's still suitable for Instagram
-- Apply the requested changes thoughtfully
+- Keep it concise (50-150 words)
+- Ensure it's suitable for Instagram
 
-Write ONLY the improved caption, nothing else:"""
+Write ONLY the improved caption:"""
 
-    try:
-        response = client.models.generate_content(
-            model=os.getenv("DEFAULT_MODEL", "gemini-2.5-flash"),
-            contents=prompt
-        )
-        improved = response.text.strip()
+        def make_request():
+            response = client.models.generate_content(
+                model=os.getenv("DEFAULT_MODEL", "gemini-2.5-flash"),
+                contents=prompt
+            )
+            return response.text.strip()
+        
+        improved = _retry_with_backoff(make_request)
+        
         return {
             "status": "success",
             "improved_caption": improved,
@@ -240,7 +274,7 @@ Write ONLY the improved caption, nothing else:"""
             "changes_applied": feedback
         }
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return _format_error(e)
 
 
 def create_complete_post(
@@ -270,6 +304,7 @@ def create_complete_post(
         topic=topic,
         brand_voice=brand_voice,
         occasion=occasion,
+        brand_name=brand_name,
         include_cta=True
     )
     
