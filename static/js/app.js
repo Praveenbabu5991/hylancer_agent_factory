@@ -29,10 +29,21 @@ class ContentStudioApp {
             selectedPreset: null,
             selectedPalette: null,
             referenceImages: [],
+            userImages: [],  // Images user wants included in posts (with usage intent)
             scrapedImages: [],
             scrapedBrandInfo: null,  // Brand info extracted from URL
             numImages: 1
         };
+
+        // Usage intent options for user images
+        this.userImageIntents = [
+            { value: 'auto', label: 'Auto (AI decides)', icon: '🤖' },
+            { value: 'background', label: 'Background', icon: '🖼️' },
+            { value: 'product_focus', label: 'Product Focus', icon: '📦' },
+            { value: 'team_people', label: 'Team/People', icon: '👥' },
+            { value: 'style_reference', label: 'Style Reference', icon: '🎨' },
+            { value: 'logo_badge', label: 'Logo/Badge', icon: '🏷️' }
+        ];
         
         // Processing state
         this.isProcessing = false;
@@ -156,7 +167,13 @@ class ContentStudioApp {
         this.referenceInput = document.getElementById('referenceInput');
         this.referenceUploadContent = document.getElementById('referenceUploadContent');
         this.referencePreviews = document.getElementById('referencePreviews');
-        
+
+        // User images for posts
+        this.userImagesUploadZone = document.getElementById('userImagesUploadZone');
+        this.userImagesInput = document.getElementById('userImagesInput');
+        this.userImagesUploadContent = document.getElementById('userImagesUploadContent');
+        this.userImagesPreviews = document.getElementById('userImagesPreviews');
+
         // Number of images
         this.numImagesSlider = document.getElementById('numImages');
         this.numImagesValue = document.getElementById('numImagesValue');
@@ -257,7 +274,26 @@ class ContentStudioApp {
             const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
             files.forEach(file => this.addReferenceImage(file));
         });
-        
+
+        // User images for posts upload
+        this.userImagesUploadZone?.addEventListener('click', () => this.userImagesInput?.click());
+        this.userImagesInput?.addEventListener('change', (e) => this.handleUserImagesSelect(e));
+
+        // User images drag and drop
+        this.userImagesUploadZone?.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            this.userImagesUploadZone.style.borderColor = 'var(--primary)';
+        });
+        this.userImagesUploadZone?.addEventListener('dragleave', () => {
+            this.userImagesUploadZone.style.borderColor = '';
+        });
+        this.userImagesUploadZone?.addEventListener('drop', (e) => {
+            e.preventDefault();
+            this.userImagesUploadZone.style.borderColor = '';
+            const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+            files.forEach(file => this.addUserImage(file));
+        });
+
         // Number of images slider
         this.numImagesSlider?.addEventListener('input', () => this.updateNumImages());
         
@@ -717,7 +753,160 @@ class ContentStudioApp {
         this.brandConfig.referenceImages = this.brandConfig.referenceImages.filter(r => r.id !== id);
         this.renderReferencePreviews();
     }
-    
+
+    // User images for posts handling
+    handleUserImagesSelect(event) {
+        const files = Array.from(event.target.files);
+        files.forEach(file => this.addUserImage(file));
+    }
+
+    async addUserImage(file) {
+        if (this.brandConfig.userImages.length >= 10) {
+            alert('Maximum 10 user images allowed');
+            return;
+        }
+
+        // Create preview immediately for UX
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            const imgData = {
+                id: 'user-img-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
+                filename: file.name,
+                dataUrl: e.target.result,
+                file: file,
+                uploading: true,
+                fullPath: null,
+                serverPath: null,
+                usage_intent: 'auto',  // Default: let AI decide
+                extracted_colors: [],
+                dimensions: null
+            };
+            this.brandConfig.userImages.push(imgData);
+            this.renderUserImagesPreviews();
+
+            // Upload to server
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('session_id', this.sessionId || '');
+                formData.append('usage_intent', imgData.usage_intent);
+
+                const response = await fetch('/upload-user-image', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success && data.image) {
+                        // Update with server data
+                        imgData.id = data.image.id;
+                        imgData.fullPath = data.image.path;
+                        imgData.serverPath = data.image.url;
+                        imgData.extracted_colors = data.image.extracted_colors || [];
+                        imgData.dimensions = data.image.dimensions || null;
+                        imgData.uploading = false;
+                        this.renderUserImagesPreviews();
+                    }
+                } else {
+                    console.error('Failed to upload user image');
+                    imgData.uploading = false;
+                    imgData.error = true;
+                    this.renderUserImagesPreviews();
+                }
+            } catch (error) {
+                console.error('Error uploading user image:', error);
+                imgData.uploading = false;
+                imgData.error = true;
+                this.renderUserImagesPreviews();
+            }
+        };
+        reader.readAsDataURL(file);
+    }
+
+    renderUserImagesPreviews() {
+        if (!this.userImagesPreviews) return;
+
+        if (this.brandConfig.userImages.length === 0) {
+            this.userImagesPreviews.hidden = true;
+            this.userImagesUploadContent.hidden = false;
+            return;
+        }
+
+        this.userImagesPreviews.hidden = false;
+        this.userImagesUploadContent.hidden = true;
+        this.userImagesPreviews.innerHTML = '';
+
+        this.brandConfig.userImages.forEach(img => {
+            const thumb = document.createElement('div');
+            thumb.className = 'user-image-thumb';
+            thumb.innerHTML = `
+                <div class="user-image-preview">
+                    <img src="${img.dataUrl}" alt="User image">
+                    ${img.uploading ? '<div class="upload-spinner"><div class="spinner-small"></div></div>' : ''}
+                    ${img.error ? '<div class="upload-error">!</div>' : ''}
+                    <button class="remove-user-img" data-id="${img.id}" title="Remove">×</button>
+                </div>
+                <div class="user-image-intent">
+                    <select class="intent-select" data-id="${img.id}">
+                        ${this.userImageIntents.map(intent =>
+                            `<option value="${intent.value}" ${img.usage_intent === intent.value ? 'selected' : ''}>${intent.icon} ${intent.label}</option>`
+                        ).join('')}
+                    </select>
+                </div>
+            `;
+
+            // Remove button handler
+            thumb.querySelector('.remove-user-img').addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.removeUserImage(img.id);
+            });
+
+            // Intent selector handler
+            thumb.querySelector('.intent-select').addEventListener('change', (e) => {
+                e.stopPropagation();
+                this.updateUserImageIntent(img.id, e.target.value);
+            });
+
+            this.userImagesPreviews.appendChild(thumb);
+        });
+
+        // Add "+" button if less than 10
+        if (this.brandConfig.userImages.length < 10) {
+            const addMore = document.createElement('div');
+            addMore.className = 'user-image-thumb add-more';
+            addMore.innerHTML = `
+                <div class="add-more-content">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                    <span>Add more</span>
+                </div>
+            `;
+            addMore.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.userImagesInput.click();
+            });
+            this.userImagesPreviews.appendChild(addMore);
+        }
+    }
+
+    removeUserImage(id) {
+        this.brandConfig.userImages = this.brandConfig.userImages.filter(img => img.id !== id);
+        this.renderUserImagesPreviews();
+
+        // Also delete from server if we have session
+        if (this.sessionId) {
+            fetch(`/delete-user-image/${this.sessionId}/${id}`, { method: 'DELETE' })
+                .catch(err => console.log('Could not delete from server:', err));
+        }
+    }
+
+    updateUserImageIntent(id, intent) {
+        const img = this.brandConfig.userImages.find(img => img.id === id);
+        if (img) {
+            img.usage_intent = intent;
+        }
+    }
+
     updateNumImages() {
         const value = parseInt(this.numImagesSlider.value);
         this.brandConfig.numImages = value;
@@ -907,6 +1096,7 @@ class ContentStudioApp {
         if (this.brandConfig.brandColors) parts.push(`Colors: ${this.brandConfig.brandColors.dominant}`);
         parts.push(`Style: ${this.brandConfig.tone}`);
         if (this.brandConfig.referenceImages.length > 0) parts.push(`${this.brandConfig.referenceImages.length} reference image(s)`);
+        if (this.brandConfig.userImages.length > 0) parts.push(`${this.brandConfig.userImages.length} image(s) for posts`);
         parts.push(`Generate: ${this.brandConfig.numImages} image(s)`);
         
         // Switch to chat and add message
@@ -942,7 +1132,16 @@ class ContentStudioApp {
         if (this.brandConfig.referenceImages.length > 0) {
             brandInfo += `\n- Reference images: ${this.brandConfig.referenceImages.length} image(s) provided for style inspiration`;
         }
-        
+
+        // Add user images info
+        if (this.brandConfig.userImages.length > 0) {
+            brandInfo += `\n- User images for posts: ${this.brandConfig.userImages.length} image(s) to incorporate`;
+            const intentSummary = this.brandConfig.userImages.map(img =>
+                `${img.filename || 'image'} (${img.usage_intent})`
+            ).join(', ');
+            brandInfo += `\n  Intents: ${intentSummary}`;
+        }
+
         if (this.brandConfig.instagramLink) {
             brandInfo += `\n- Reference URL: ${this.brandConfig.instagramLink}`;
         }
@@ -1001,7 +1200,24 @@ class ContentStudioApp {
                 data: this.brandConfig.scrapedBrandInfo
             });
         }
-        
+
+        // Add user images for posts (with usage intents)
+        const uploadedUserImages = this.brandConfig.userImages.filter(img => img.fullPath && !img.uploading);
+        if (uploadedUserImages.length > 0) {
+            attachments.push({
+                type: 'user_images',
+                count: uploadedUserImages.length,
+                images: uploadedUserImages.map(img => ({
+                    id: img.id,
+                    filename: img.filename,
+                    path: img.fullPath,
+                    url: img.serverPath,
+                    usage_intent: img.usage_intent,
+                    extracted_colors: img.extracted_colors || []
+                }))
+            });
+        }
+
         try {
             const response = await fetch('/chat/stream', {
                 method: 'POST',
@@ -1057,7 +1273,24 @@ class ContentStudioApp {
                 paths: uploadedRefs.map(r => r.fullPath)  // Use full filesystem paths
             });
         }
-        
+
+        // Add user images for posts (with usage intents)
+        const uploadedUserImages = this.brandConfig.userImages.filter(img => img.fullPath && !img.uploading);
+        if (uploadedUserImages.length > 0) {
+            attachments.push({
+                type: 'user_images',
+                count: uploadedUserImages.length,
+                images: uploadedUserImages.map(img => ({
+                    id: img.id,
+                    filename: img.filename,
+                    path: img.fullPath,
+                    url: img.serverPath,
+                    usage_intent: img.usage_intent,
+                    extracted_colors: img.extracted_colors || []
+                }))
+            });
+        }
+
         // Append brand context to message if we have it
         let fullMessage = message;
         if (this.brandConfig.companyName || this.brandConfig.brandColors) {

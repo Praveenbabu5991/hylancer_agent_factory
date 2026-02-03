@@ -1,25 +1,32 @@
 """
-Image Post Agent - Creates visual briefs and generates premium Instagram visuals.
+Post Generation Agent - Creates complete social media posts with images, captions, and hashtags.
+
+This agent combines image generation with caption and hashtag creation for a streamlined
+one-stop post creation experience.
 """
 
 from google.adk.agents import LlmAgent
-from config.settings import DEFAULT_MODEL
+from config.models import get_image_model
 from prompts.image_agent import IMAGE_AGENT_PROMPT
-from tools.image_gen import generate_post_image, extract_brand_colors
+from tools.image_gen import generate_post_image, generate_complete_post, extract_brand_colors
+from tools.content import write_caption, generate_hashtags
 from tools.instagram import scrape_instagram_profile
 from memory.store import save_to_memory, recall_from_memory
 
 
 image_post_agent = LlmAgent(
     name="ImagePostAgent",
-    model=DEFAULT_MODEL,
+    model=get_image_model(),
     instruction=IMAGE_AGENT_PROMPT,
     tools=[
-        generate_post_image,
+        generate_complete_post,  # Primary tool - creates image + caption + hashtags
+        generate_post_image,     # For image-only generation
+        write_caption,           # For caption-only generation
+        generate_hashtags,       # For hashtag-only generation
         extract_brand_colors,
         scrape_instagram_profile,
         save_to_memory,
         recall_from_memory,
     ],
-    description="Creates visual briefs and generates premium Instagram visuals with brand integration."
+    description="Creates complete social media posts with images, captions, and hashtags in one workflow."
 )

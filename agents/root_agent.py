@@ -4,7 +4,7 @@ Root Agent (Content Studio Manager) - Orchestrates the multi-agent workflow.
 
 from google.adk.agents import LlmAgent
 from google.genai import types
-from config.settings import DEFAULT_MODEL
+from config.models import get_orchestrator_model
 from prompts.root_agent import get_root_agent_prompt
 from memory.store import get_memory_store, get_or_create_project, save_to_memory, recall_from_memory
 from tools.instagram import scrape_instagram_profile, get_profile_summary
@@ -18,6 +18,7 @@ from agents.caption_agent import caption_agent
 from agents.edit_agent import edit_agent
 from agents.animation_agent import animation_agent
 from agents.campaign_agent import campaign_agent
+from agents.writer_agent import writer_agent
 
 
 def get_memory_context() -> str:
@@ -36,10 +37,11 @@ def get_memory_context() -> str:
 # Create the root agent with dynamic prompt
 root_agent = LlmAgent(
     name="ContentStudioManager",
-    model=DEFAULT_MODEL,
+    model=get_orchestrator_model(),
     instruction=get_root_agent_prompt(get_memory_context()),
     sub_agents=[
         idea_suggestion_agent,
+        writer_agent,
         image_post_agent,
         caption_agent,
         edit_agent,

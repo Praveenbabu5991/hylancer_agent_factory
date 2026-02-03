@@ -133,11 +133,13 @@ def generate_post_image(
     greeting_text: str = "",
     headline_text: str = "",
     subtext: str = "",
-    cta_text: str = ""
+    cta_text: str = "",
+    user_images: str = "",
+    user_image_instructions: str = ""
 ) -> dict:
     """
     Generate a professional social media post image using Gemini.
-    
+
     Args:
         prompt: Description of the image/visual concept
         brand_name: Name of the brand/company
@@ -153,7 +155,9 @@ def generate_post_image(
         headline_text: Main headline text for the image
         subtext: Supporting text/tagline
         cta_text: Call-to-action text
-        
+        user_images: Comma-separated paths to user-uploaded images to incorporate
+        user_image_instructions: Instructions on how to use user images (e.g., "[BACKGROUND] path1, [PRODUCT_FOCUS] path2")
+
     Returns:
         Dictionary with image path and generation details
     """
@@ -308,7 +312,44 @@ Create a scroll-stopping, magazine-quality image."""
                         print(f"   📷 Added reference: {ref_path}")
                     except Exception as e:
                         print(f"   ⚠️ Could not load reference {ref_path}: {e}")
-        
+
+        # Handle user-uploaded images to incorporate into the post
+        if user_images:
+            user_img_paths = [p.strip() for p in user_images.split(",") if p.strip()]
+            user_img_count = 0
+            for user_img_path in user_img_paths[:5]:  # Limit to 5 user images
+                if os.path.exists(user_img_path):
+                    try:
+                        user_img = Image.open(user_img_path)
+                        contents.append(user_img)
+                        user_img_count += 1
+                        print(f"   📸 Added user image: {user_img_path}")
+                    except Exception as e:
+                        print(f"   ⚠️ Could not load user image {user_img_path}: {e}")
+
+            if user_img_count > 0:
+                # Add instructions for how to use the user images
+                user_img_prompt = f"""
+
+USER PROVIDED IMAGES ({user_img_count} image(s)):
+The user has uploaded {user_img_count} image(s) to be incorporated into this post.
+"""
+                if user_image_instructions:
+                    # Parse structured instructions like "[BACKGROUND] path1, [PRODUCT_FOCUS] path2"
+                    user_img_prompt += f"""
+SPECIFIC USAGE INSTRUCTIONS:
+{user_image_instructions}
+"""
+                else:
+                    user_img_prompt += """
+- Incorporate these images naturally into the design
+- Maintain the quality and visibility of the uploaded images
+- Blend them harmoniously with the brand colors and overall aesthetic
+- Ensure they enhance rather than distract from the message
+"""
+                # Insert user image instructions into the prompt
+                contents[0] = contents[0] + user_img_prompt
+
         # Generate image with retry
         model = os.getenv("IMAGE_MODEL", "gemini-2.0-flash-exp")
         
@@ -356,6 +397,255 @@ Create a scroll-stopping, magazine-quality image."""
             
     except Exception as e:
         return _format_error(e, "Try simplifying your design request.")
+
+
+def generate_complete_post(
+    prompt: str,
+    brand_name: str = "",
+    brand_colors: str = "",
+    style: str = "creative",
+    logo_path: str = "",
+    output_dir: str = "generated",
+    industry: str = "",
+    occasion: str = "",
+    reference_images: str = "",
+    company_overview: str = "",
+    greeting_text: str = "",
+    headline_text: str = "",
+    subtext: str = "",
+    cta_text: str = "",
+    user_images: str = "",
+    user_image_instructions: str = "",
+    brand_voice: str = "professional yet friendly",
+    target_audience: str = "",
+    emoji_level: str = "moderate",
+    max_hashtags: int = 15
+) -> dict:
+    """
+    Generate a complete social media post with image, caption, and hashtags.
+
+    This is the primary tool for creating full posts in one call.
+
+    Args:
+        prompt: Visual concept/description for the image
+        brand_name: Name of the brand/company
+        brand_colors: Comma-separated brand colors (hex codes)
+        style: Visual style (creative, professional, playful, minimal, bold)
+        logo_path: Path to logo image to incorporate
+        output_dir: Directory to save generated images
+        industry: Brand's industry/niche
+        occasion: Special occasion/event theme
+        reference_images: Comma-separated paths to reference images
+        company_overview: Description of what the company does
+        greeting_text: Event greeting (e.g., "Happy Valentine's Day!")
+        headline_text: Main headline text for the image
+        subtext: Supporting text/tagline
+        cta_text: Call-to-action text
+        user_images: Comma-separated paths to user-uploaded images
+        user_image_instructions: Instructions on how to use user images
+        brand_voice: Brand's tone of voice for caption
+        target_audience: Target audience description
+        emoji_level: none, minimal, moderate, heavy
+        max_hashtags: Maximum number of hashtags to generate
+
+    Returns:
+        Dictionary with image, caption, hashtags, and full post content
+    """
+    from tools.content import write_caption, generate_hashtags
+
+    print(f"🎯 Generating complete post for: {brand_name or 'brand'}")
+
+    # Step 1: Generate the image
+    image_result = generate_post_image(
+        prompt=prompt,
+        brand_name=brand_name,
+        brand_colors=brand_colors,
+        style=style,
+        logo_path=logo_path,
+        output_dir=output_dir,
+        industry=industry,
+        occasion=occasion,
+        reference_images=reference_images,
+        company_overview=company_overview,
+        greeting_text=greeting_text,
+        headline_text=headline_text,
+        subtext=subtext,
+        cta_text=cta_text,
+        user_images=user_images,
+        user_image_instructions=user_image_instructions
+    )
+
+    if image_result.get("status") != "success":
+        return image_result
+
+    # Step 2: Generate caption based on the image and context
+    topic = prompt
+    if occasion:
+        topic = f"{occasion}: {prompt}"
+
+    caption_result = write_caption(
+        topic=topic,
+        brand_voice=brand_voice,
+        target_audience=target_audience or industry or "general",
+        key_message=headline_text or subtext or "",
+        occasion=occasion,
+        tone="engaging",
+        include_cta=bool(cta_text),
+        emoji_level=emoji_level,
+        company_overview=company_overview,
+        brand_name=brand_name,
+        image_description=prompt
+    )
+
+    # Step 3: Generate hashtags
+    hashtag_result = generate_hashtags(
+        topic=topic,
+        niche=industry,
+        brand_name=brand_name,
+        trending_context=occasion,
+        max_hashtags=max_hashtags
+    )
+
+    # Combine results
+    result = {
+        "status": "success",
+        "image": image_result,
+        "image_path": image_result.get("image_path"),
+        "image_url": image_result.get("url"),
+    }
+
+    # Add caption
+    if caption_result.get("status") == "success":
+        result["caption"] = caption_result.get("caption")
+        result["caption_length"] = caption_result.get("character_count")
+    else:
+        result["caption"] = f"✨ {headline_text or prompt}\n\n{cta_text or 'Check it out!'}"
+        result["caption_error"] = caption_result.get("message")
+
+    # Add hashtags
+    if hashtag_result.get("status") == "success":
+        result["hashtags"] = hashtag_result.get("hashtags")
+        result["hashtag_string"] = hashtag_result.get("hashtag_string")
+    else:
+        result["hashtags"] = []
+        result["hashtag_string"] = ""
+        result["hashtag_error"] = hashtag_result.get("message")
+
+    # Create full post text
+    full_post = result["caption"]
+    if result.get("hashtag_string"):
+        full_post += f"\n\n.\n.\n.\n\n{result['hashtag_string']}"
+    result["full_post"] = full_post
+
+    print(f"   ✅ Complete post generated!")
+    print(f"   📷 Image: {result.get('image_path')}")
+    print(f"   📝 Caption: {len(result.get('caption', ''))} chars")
+    print(f"   #️⃣ Hashtags: {len(result.get('hashtags', []))}")
+
+    return result
+
+
+def regenerate_post(
+    original_image_path: str,
+    edit_instruction: str,
+    regenerate_caption: bool = False,
+    regenerate_hashtags: bool = False,
+    original_caption: str = "",
+    original_context_json: str = "",
+    output_dir: str = "generated"
+) -> dict:
+    """
+    Regenerate/edit an existing post based on feedback.
+
+    This tool handles:
+    - Image edits (color changes, element modifications, style adjustments)
+    - Caption regeneration with new tone/message
+    - Hashtag refresh
+
+    Args:
+        original_image_path: Path to the original image to edit
+        edit_instruction: What changes to make to the image
+        regenerate_caption: Also regenerate the caption
+        regenerate_hashtags: Also regenerate hashtags
+        original_caption: The original caption (for context)
+        original_context_json: JSON string with original context (brand_name, industry, occasion, etc.)
+        output_dir: Directory to save edited images
+
+    Returns:
+        Dictionary with regenerated content
+    """
+    import json
+    from tools.content import improve_caption, generate_hashtags
+
+    print(f"🔄 Regenerating post: {original_image_path}")
+    print(f"   Changes: {edit_instruction[:50]}...")
+
+    result = {"status": "success"}
+
+    # Parse context from JSON string
+    context = {}
+    if original_context_json:
+        try:
+            context = json.loads(original_context_json)
+        except json.JSONDecodeError:
+            pass
+
+    # Step 1: Edit the image
+    image_result = edit_post_image(
+        original_image_path=original_image_path,
+        edit_instruction=edit_instruction,
+        output_dir=output_dir
+    )
+
+    if image_result.get("status") == "success":
+        result["image"] = image_result
+        result["image_path"] = image_result.get("image_path")
+        result["image_url"] = image_result.get("url")
+    else:
+        result["image_error"] = image_result.get("message")
+        result["image_path"] = original_image_path
+
+    # Step 2: Regenerate caption if requested
+    if regenerate_caption and original_caption:
+        caption_result = improve_caption(
+            original_caption=original_caption,
+            feedback=edit_instruction,
+            preserve_tone=True
+        )
+
+        if caption_result.get("status") == "success":
+            result["caption"] = caption_result.get("improved_caption")
+            result["caption_regenerated"] = True
+        else:
+            result["caption"] = original_caption
+            result["caption_error"] = caption_result.get("message")
+    elif original_caption:
+        result["caption"] = original_caption
+
+    # Step 3: Regenerate hashtags if requested
+    if regenerate_hashtags and context:
+        hashtag_result = generate_hashtags(
+            topic=context.get("prompt", edit_instruction),
+            niche=context.get("industry", ""),
+            brand_name=context.get("brand_name", ""),
+            trending_context=context.get("occasion", ""),
+            max_hashtags=context.get("max_hashtags", 15)
+        )
+
+        if hashtag_result.get("status") == "success":
+            result["hashtags"] = hashtag_result.get("hashtags")
+            result["hashtag_string"] = hashtag_result.get("hashtag_string")
+            result["hashtags_regenerated"] = True
+
+    # Create full post if we have both caption and hashtags
+    if result.get("caption") and result.get("hashtag_string"):
+        result["full_post"] = f"{result['caption']}\n\n.\n.\n.\n\n{result['hashtag_string']}"
+    elif result.get("caption"):
+        result["full_post"] = result["caption"]
+
+    print(f"   ✅ Regeneration complete!")
+
+    return result
 
 
 def edit_post_image(

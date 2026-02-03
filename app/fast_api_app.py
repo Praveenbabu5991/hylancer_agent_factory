@@ -297,28 +297,188 @@ async def upload_logo(file: UploadFile = File(...)):
 async def upload_reference(file: UploadFile = File(...)):
     """
     Upload a reference image for style inspiration.
-    
+
     Validates file type, size, and dimensions.
     """
     validate_image_file(file)
-    
+
     content = await file.read()
     await validate_image_content(content)
-    
+
     # Generate unique filename with 'ref_' prefix
     ext = Path(file.filename).suffix.lower()
     unique_filename = f"ref_{uuid.uuid4()}{ext}"
     filepath = UPLOAD_DIR / unique_filename
-    
+
     # Save file
     with open(filepath, "wb") as f:
         f.write(content)
-    
+
     return {
         "success": True,
         "filename": unique_filename,
         "path": f"/uploads/{unique_filename}",
         "full_path": str(filepath)
+    }
+
+
+# Valid usage intents for user-uploaded images
+USER_IMAGE_INTENTS = [
+    "background",      # Use as background image
+    "product_focus",   # Show product prominently in foreground
+    "team_people",     # Include people/team in composition
+    "style_reference", # Style inspiration only (not in final image)
+    "logo_badge",      # Include as logo/badge overlay
+    "auto",            # Let AI decide best placement
+]
+
+
+@app.post("/upload-user-image")
+async def upload_user_image(
+    file: UploadFile = File(...),
+    session_id: str = Form(default=""),
+    usage_intent: str = Form(default="auto"),
+):
+    """
+    Upload images user wants included in their posts.
+
+    Args:
+        file: Image file to upload
+        session_id: Current session ID (used for organizing uploads)
+        usage_intent: How the image should be used in posts:
+            - "background" - Use as background image
+            - "product_focus" - Show product prominently in foreground
+            - "team_people" - Include people/team in composition
+            - "style_reference" - Style inspiration only (not in final image)
+            - "logo_badge" - Include as logo/badge overlay
+            - "auto" - Let AI decide best placement (default)
+
+    Returns:
+        Image metadata including id, path, url, colors, dimensions
+    """
+    validate_image_file(file)
+
+    content = await file.read()
+    await validate_image_content(content)
+
+    # Validate usage intent
+    if usage_intent not in USER_IMAGE_INTENTS:
+        usage_intent = "auto"
+
+    # Generate unique image ID and filename
+    image_id = str(uuid.uuid4())[:8]
+    ext = Path(file.filename).suffix.lower()
+    filename = f"img_{image_id}{ext}"
+
+    # Create session-specific folder for organization
+    if session_id:
+        user_images_dir = UPLOAD_DIR / "user_images" / session_id
+    else:
+        user_images_dir = UPLOAD_DIR / "user_images" / "default"
+
+    user_images_dir.mkdir(parents=True, exist_ok=True)
+    filepath = user_images_dir / filename
+
+    # Save file
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    # Extract colors from image
+    colors = extract_brand_colors(str(filepath))
+
+    # Get image dimensions
+    with Image.open(filepath) as img:
+        dimensions = img.size  # (width, height)
+
+    # Build URL path
+    if session_id:
+        url = f"/uploads/user_images/{session_id}/{filename}"
+    else:
+        url = f"/uploads/user_images/default/{filename}"
+
+    # Build response with full image metadata
+    user_image = {
+        "id": image_id,
+        "filename": file.filename,  # Original filename
+        "path": str(filepath),
+        "url": url,
+        "uploaded_at": datetime.now().isoformat(),
+        "usage_intent": usage_intent,
+        "extracted_colors": colors.get("palette", []),
+        "dimensions": dimensions,
+    }
+
+    return {
+        "success": True,
+        "image": user_image,
+    }
+
+
+class UpdateIntentRequest(BaseModel):
+    """Request model for updating user image intent."""
+    session_id: str
+    image_id: str
+    usage_intent: str
+
+
+@app.patch("/update-user-image-intent")
+async def update_user_image_intent(request: UpdateIntentRequest):
+    """
+    Update the usage intent for a previously uploaded user image.
+
+    Args:
+        request: Contains session_id, image_id, and new usage_intent
+
+    Returns:
+        Updated intent confirmation
+    """
+    if request.usage_intent not in USER_IMAGE_INTENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid usage intent. Must be one of: {', '.join(USER_IMAGE_INTENTS)}"
+        )
+
+    return {
+        "success": True,
+        "session_id": request.session_id,
+        "image_id": request.image_id,
+        "usage_intent": request.usage_intent,
+        "message": f"Usage intent updated to '{request.usage_intent}'"
+    }
+
+
+@app.delete("/delete-user-image/{session_id}/{image_id}")
+async def delete_user_image(session_id: str, image_id: str):
+    """
+    Delete a user-uploaded image.
+
+    Args:
+        session_id: Session ID the image belongs to
+        image_id: The ID of the image to delete
+
+    Returns:
+        Deletion confirmation
+    """
+    # Find and delete the image file
+    user_images_dir = UPLOAD_DIR / "user_images" / session_id
+
+    if not user_images_dir.exists():
+        raise HTTPException(status_code=404, detail="Session folder not found")
+
+    # Look for file with matching image_id
+    deleted = False
+    for img_file in user_images_dir.glob(f"img_{image_id}.*"):
+        img_file.unlink()
+        deleted = True
+        break
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    return {
+        "success": True,
+        "image_id": image_id,
+        "message": "Image deleted successfully"
     }
 
 
@@ -438,6 +598,18 @@ async def chat_stream(request: ChatRequest):
                 ref_paths = att.get("paths", [])
                 if ref_paths:
                     attachment_context += f"\n🖼️ REFERENCE_IMAGES: {','.join(ref_paths)}"
+            elif att.get("type") == "user_images":
+                # User-uploaded images with usage intents
+                user_imgs = att.get("images", [])
+                if user_imgs:
+                    attachment_context += "\n📸 USER_IMAGES_FOR_POST:"
+                    for img in user_imgs:
+                        intent = img.get("usage_intent", "auto")
+                        path = img.get("path", img.get("full_path", ""))
+                        attachment_context += f"\n  - [{intent.upper()}] {path}"
+                    # Also provide a comma-separated list of paths for the tool
+                    all_paths = [img.get("path", img.get("full_path", "")) for img in user_imgs if img.get("path") or img.get("full_path")]
+                    attachment_context += f"\n  USER_IMAGES_PATHS: {','.join(all_paths)}"
             elif att.get("type") == "company_overview":
                 attachment_context += f"\n📋 COMPANY_OVERVIEW: {att.get('content', '')}"
         message_text = message_text + attachment_context

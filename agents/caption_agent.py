@@ -3,7 +3,7 @@ Caption Agent - Creates scroll-stopping captions and strategic hashtags.
 """
 
 from google.adk.agents import LlmAgent
-from config.settings import DEFAULT_MODEL
+from config.models import get_caption_model
 from prompts.caption_agent import CAPTION_AGENT_PROMPT
 from tools.content import write_caption, generate_hashtags, improve_caption, create_complete_post
 from tools.web_search import search_trending_topics
@@ -13,7 +13,7 @@ from memory.store import save_to_memory, recall_from_memory
 
 caption_agent = LlmAgent(
     name="CaptionAgent",
-    model=DEFAULT_MODEL,
+    model=get_caption_model(),
     instruction=CAPTION_AGENT_PROMPT,
     tools=[
         write_caption,

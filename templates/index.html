@@ -408,6 +408,31 @@
                             <p class="field-hint">Upload images to guide the visual style of generated content</p>
                         </div>
 
+                        <!-- User Images for Posts (NEW) -->
+                        <div class="form-section">
+                            <label class="section-label">
+                                <span class="label-icon">📸</span>
+                                Images for Posts <span class="optional-tag">(optional)</span>
+                            </label>
+                            <div class="user-images-upload-zone" id="userImagesUploadZone">
+                                <input type="file" id="userImagesInput" accept="image/*" multiple hidden>
+                                <div class="user-images-upload-content" id="userImagesUploadContent">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="upload-mini-icon">
+                                        <rect x="3" y="3" width="18" height="18" rx="2"/>
+                                        <circle cx="8.5" cy="8.5" r="1.5"/>
+                                        <path d="M21 15l-5-5L5 21"/>
+                                        <path d="M14 3v4M12 5h4" stroke-opacity="0.5"/>
+                                    </svg>
+                                    <span>Add images you want in your posts</span>
+                                    <p class="upload-hint-small">Products, team photos, or any visuals to include</p>
+                                </div>
+                                <div class="user-images-previews" id="userImagesPreviews" hidden>
+                                    <!-- User image thumbnails with intent selectors will be added here -->
+                                </div>
+                            </div>
+                            <p class="field-hint">These images will be incorporated into your generated posts. Select how each should be used.</p>
+                        </div>
+
                         <!-- Tone Selection -->
                         <div class="form-section">
                             <label class="section-label">
