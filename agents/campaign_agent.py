@@ -8,6 +8,8 @@ Key features:
 - Calendar and trend integration for timely content
 """
 
+print("📦 Loading campaign_agent.py...")
+
 from google.adk.agents import LlmAgent
 from config.models import get_campaign_model
 from prompts.campaign_agent import CAMPAIGN_AGENT_PROMPT
@@ -22,6 +24,7 @@ from tools.image_gen import generate_complete_post, generate_post_image, extract
 from tools.content import write_caption, generate_hashtags
 from memory.store import save_to_memory, recall_from_memory
 
+print(f"📅 Creating CampaignPlannerAgent with model: {get_campaign_model()}")
 
 campaign_agent = LlmAgent(
     name="CampaignPlannerAgent",

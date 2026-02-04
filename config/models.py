@@ -92,7 +92,21 @@ MODELS: Dict[str, ModelConfig] = {
         provider=ModelProvider.GOOGLE,
         capabilities=[ModelCapability.VIDEO_GENERATION],
         cost_tier="premium",
-        description="Video generation model",
+        description="Video generation model (legacy)",
+    ),
+    "veo-3.1-generate-preview": ModelConfig(
+        model_id="veo-3.1-generate-preview",
+        provider=ModelProvider.GOOGLE,
+        capabilities=[ModelCapability.VIDEO_GENERATION],
+        cost_tier="premium",
+        description="Veo 3.1 - High-quality video with audio generation",
+    ),
+    "veo-3.1-fast-generate-preview": ModelConfig(
+        model_id="veo-3.1-fast-generate-preview",
+        provider=ModelProvider.GOOGLE,
+        capabilities=[ModelCapability.VIDEO_GENERATION],
+        cost_tier="standard",
+        description="Veo 3.1 Fast - Optimized for speed without audio",
     ),
 
     # OpenAI models (for future multi-provider support)
@@ -138,7 +152,7 @@ DEFAULT_AGENT_MODELS = {
     "edit": "gemini-2.0-flash-exp",
     "campaign": "gemini-2.5-flash",
     "caption": "gemini-2.5-flash",
-    "video": "veo-2.0-generate-001",
+    "video": "veo-3.1-generate-preview",  # Veo 3.1 with audio support
 }
 
 

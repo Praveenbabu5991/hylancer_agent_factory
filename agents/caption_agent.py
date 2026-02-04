@@ -2,6 +2,8 @@
 Caption Agent - Creates scroll-stopping captions and strategic hashtags.
 """
 
+print("📦 Loading caption_agent.py...")
+
 from google.adk.agents import LlmAgent
 from config.models import get_caption_model
 from prompts.caption_agent import CAPTION_AGENT_PROMPT
@@ -10,6 +12,7 @@ from tools.web_search import search_trending_topics
 from tools.calendar import get_festivals_and_events
 from memory.store import save_to_memory, recall_from_memory
 
+print(f"📝 Creating CaptionAgent with model: {get_caption_model()}")
 
 caption_agent = LlmAgent(
     name="CaptionAgent",

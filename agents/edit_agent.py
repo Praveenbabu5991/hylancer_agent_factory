@@ -8,6 +8,8 @@ This agent handles:
 - Full post regeneration combining all elements
 """
 
+print("📦 Loading edit_agent.py...")
+
 from google.adk.agents import LlmAgent
 from config.models import get_edit_model
 from prompts.edit_agent import EDIT_AGENT_PROMPT
@@ -15,6 +17,7 @@ from tools.image_gen import edit_post_image, regenerate_post
 from tools.content import improve_caption, generate_hashtags
 from memory.store import save_to_memory, recall_from_memory
 
+print(f"✏️ Creating EditPostAgent with model: {get_edit_model()}")
 
 edit_agent = LlmAgent(
     name="EditPostAgent",

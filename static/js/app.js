@@ -8,6 +8,7 @@ class ContentStudioApp {
         this.sessionId = null;
         this.userId = 'default_user';
         this.generatedImages = [];
+        this.generatedImagesMeta = {};  // Stores caption/hashtags for each image
         this.currentCaption = null;
         this.currentHashtags = [];
         
@@ -376,6 +377,7 @@ class ContentStudioApp {
             
             // Also clear the gallery UI for the new session
             this.generatedImages = [];
+            this.generatedImagesMeta = {};
             this.contentGrid.innerHTML = '';
             this.emptyState.hidden = false;
             
@@ -400,12 +402,27 @@ class ContentStudioApp {
     
     // Save generated images to localStorage for persistence
     saveImagesToStorage() {
+        // Save image metadata along with paths
         localStorage.setItem('content_studio_images', JSON.stringify(this.generatedImages));
+        localStorage.setItem('content_studio_images_meta', JSON.stringify(this.generatedImagesMeta || {}));
     }
-    
+
     // Restore generated images from localStorage
     restoreImagesFromStorage() {
         const savedImages = localStorage.getItem('content_studio_images');
+        const savedMeta = localStorage.getItem('content_studio_images_meta');
+
+        // Load metadata
+        if (savedMeta) {
+            try {
+                this.generatedImagesMeta = JSON.parse(savedMeta);
+            } catch (e) {
+                this.generatedImagesMeta = {};
+            }
+        } else {
+            this.generatedImagesMeta = {};
+        }
+
         if (savedImages) {
             try {
                 const images = JSON.parse(savedImages);
@@ -414,7 +431,13 @@ class ContentStudioApp {
                     images.forEach(imgUrl => {
                         if (!this.generatedImages.includes(imgUrl)) {
                             this.generatedImages.push(imgUrl);
-                            this.addImageToGallery(imgUrl);
+                            // Restore with metadata if available
+                            const meta = this.generatedImagesMeta[imgUrl];
+                            if (meta && (meta.caption || (meta.hashtags && meta.hashtags.length > 0))) {
+                                this.addImageToGalleryWithCaption(imgUrl, meta.caption || '', meta.hashtags || []);
+                            } else {
+                                this.addImageToGallery(imgUrl);
+                            }
                         }
                     });
                 }
@@ -438,9 +461,11 @@ class ContentStudioApp {
         localStorage.removeItem('content_studio_session');
         localStorage.removeItem('content_studio_messages');
         localStorage.removeItem('content_studio_images');
+        localStorage.removeItem('content_studio_images_meta');
         this.sessionId = null;
         this.chatMessages.innerHTML = '';
         this.generatedImages = [];
+        this.generatedImagesMeta = {};
         this.contentGrid.innerHTML = '';
         this.emptyState.hidden = false;
         this.contentGrid.hidden = true;
@@ -1473,9 +1498,31 @@ class ContentStudioApp {
                             }
                             this.updateMessage(messageElement, assistantMessage);
                         } else if (data.type === 'done') {
-                            this.parseAssistantResponse(assistantMessage);
-                            // Update right panel with content
-                            this.updateRightPanel(assistantMessage);
+                            // Try to parse as structured response from format_response_for_user tool
+                            const structuredResponse = this.parseStructuredResponse(assistantMessage);
+
+                            if (structuredResponse) {
+                                // Handle structured response with choices
+                                this.handleStructuredResponse(structuredResponse, messageElement);
+                            } else {
+                                // Fallback: Handle as regular text response
+                                this.parseAssistantResponse(assistantMessage);
+                                this.updateRightPanel(assistantMessage);
+
+                                // Detect and render choice buttons using text pattern matching
+                                if (messageElement) {
+                                    const choices = this.detectChoicesInMessage(assistantMessage);
+                                    if (choices.length > 0) {
+                                        const contentEl = messageElement.closest('.message')?.querySelector('.message-content');
+                                        if (contentEl) {
+                                            this.renderChoiceButtons(choices, contentEl);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Save to storage now that streaming is complete
+                            this.saveMessagesToStorage();
                         }
                     } catch (e) {}
                 }
@@ -1491,33 +1538,42 @@ class ContentStudioApp {
     addMessage(text, role, isStreaming = false, isPreformatted = false) {
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${role}`;
-        
+
         const avatar = document.createElement('div');
         avatar.className = 'message-avatar';
-        avatar.innerHTML = role === 'user' 
+        avatar.innerHTML = role === 'user'
             ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
             : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>';
-        
+
         const content = document.createElement('div');
         content.className = 'message-content';
-        
+
         const textDiv = document.createElement('div');
         textDiv.className = 'message-text';
         // If preformatted (restored from storage), use as-is; otherwise format
         textDiv.innerHTML = isPreformatted ? text : this.formatMessage(text);
-        
+
         content.appendChild(textDiv);
         messageDiv.appendChild(avatar);
         messageDiv.appendChild(content);
-        
+
         this.chatMessages.appendChild(messageDiv);
+
+        // For assistant messages (not streaming), detect and render choice buttons
+        if (role === 'assistant' && !isStreaming) {
+            const choices = this.detectChoicesInMessage(text);
+            if (choices.length > 0) {
+                this.renderChoiceButtons(choices, content);
+            }
+        }
+
         this.scrollToBottom();
-        
+
         // Save to localStorage (but not for streaming messages which are updated later)
         if (!isStreaming) {
             this.saveMessagesToStorage();
         }
-        
+
         return textDiv;
     }
     
@@ -2190,8 +2246,15 @@ class ContentStudioApp {
             imageCaptionPairs.forEach(pair => {
                 console.log('🖼️ Pair:', pair.image, 'Caption:', pair.caption?.substring(0, 50));
                 if (!this.generatedImages.includes(pair.image)) {
+                    // New image - add to gallery
                     this.generatedImages.push(pair.image);
                     this.addImageToGalleryWithCaption(pair.image, pair.caption, pair.hashtags);
+                    this.saveImagesToStorage();
+                } else if (pair.caption || (pair.hashtags && pair.hashtags.length > 0)) {
+                    // Image already exists but now we have caption/hashtags (carousel complete scenario)
+                    // Update the existing gallery card with caption/hashtags
+                    console.log('🔄 Updating existing image with caption/hashtags:', pair.image);
+                    this.updateGalleryCardWithCaption(pair.image, pair.caption, pair.hashtags);
                     this.saveImagesToStorage();
                 }
             });
@@ -2202,6 +2265,8 @@ class ContentStudioApp {
                 /\*\*(?:📸\s*)?Image:\*\*\s*(\/generated\/[^\s\n]+\.png)/gi,  // **📸 Image:** or **Image:** /generated/xxx.png
                 /📸\s*Image:\s*(\/generated\/[^\s\n]+\.png)/gi,  // 📸 Image: /generated/xxx.png
                 /Image:\s*(\/generated\/[^\s\n]+\.png)/gi,  // Image: /generated/xxx.png
+                /\[📷[^\]]*\]\((\/generated\/[^\)]+\.png)\)/gi,  // Markdown link: [📷 View Image](/generated/xxx.png)
+                /\[[^\]]*\]\((\/generated\/[^\)]+\.png)\)/gi,    // Any markdown link to generated image
                 /\/generated\/post_[a-zA-Z0-9_]+\.png/g,  // /generated/post_xxx.png (specific)
                 /\/generated\/[a-zA-Z0-9_-]+\.png/g,  // /generated/xxx.png (general)
                 /generated\/[a-zA-Z0-9_-]+\.png/g,    // Without leading slash
@@ -2231,7 +2296,29 @@ class ContentStudioApp {
                 if (!this.generatedImages.includes(imgPath)) {
                     console.log('➕ Adding image to gallery:', imgPath);
                     this.generatedImages.push(imgPath);
-                    this.addImageToGallery(imgPath);
+
+                    // Try to extract caption and hashtags near this image
+                    const imgIndex = text.indexOf(imgPath);
+                    if (imgIndex !== -1) {
+                        const textAfterImage = text.slice(imgIndex, imgIndex + 2000);
+
+                        // Look for caption after the image
+                        const captionMatch = textAfterImage.match(/(?:\*\*)?(?:📝\s*)?Caption(?:\*\*)?:?\s*\n?([\s\S]*?)(?=\*\*(?:#️⃣|Hashtags)|#️⃣\s*(?:\*\*)?Hashtags|---|\n\n\*\*What|\n\n---|\n\nOptions:|$)/i);
+                        let caption = captionMatch ? captionMatch[1].trim().replace(/\*\*/g, '').substring(0, 800) : '';
+
+                        // Look for hashtags
+                        const hashtagMatch = textAfterImage.match(/#[a-zA-Z][a-zA-Z0-9_]*/g);
+                        const hashtags = hashtagMatch ? hashtagMatch.slice(0, 25) : [];
+
+                        if (caption || hashtags.length > 0) {
+                            console.log('📝 Found caption/hashtags for fallback image');
+                            this.addImageToGalleryWithCaption(imgPath, caption, hashtags);
+                        } else {
+                            this.addImageToGallery(imgPath);
+                        }
+                    } else {
+                        this.addImageToGallery(imgPath);
+                    }
                     this.saveImagesToStorage();
                 }
             });
@@ -2273,65 +2360,214 @@ class ContentStudioApp {
     // Extract image-caption pairs from response text
     extractImageCaptionPairs(text) {
         const pairs = [];
-        
-        // Pattern 1: Day-based format (Day 1: ..., Image: ..., Caption: ...)
-        const dayPattern = /(?:Day\s*\d+|📸\s*Day\s*\d+)[^\n]*\n(?:.*?\n)*?.*?(?:Image|Generated)[^\n]*?(\/generated\/[^\s\)\"\'\`<>]+\.png)(?:.*?\n)*?(?:Caption|📝)[:\s]*\n?([\s\S]*?)(?=(?:Day\s*\d+|📸|Hashtags|#️⃣|\n---|\n\n\n|$))/gi;
-        
         let match;
-        while ((match = dayPattern.exec(text)) !== null) {
+
+        // Pattern 1: Campaign post format - "✅ Post X of Y Created!" followed by image/caption/hashtags
+        // This handles the campaign agent output format
+        const campaignPostPattern = /(?:✅\s*)?Post\s*\d+\s*(?:of\s*\d+)?\s*Created!?\s*\n+(?:📷\s*)?(?:\*\*)?Image(?:\*\*)?:?\s*[^\n]*?(\/generated\/[^\s\)\"\'\`<>\n]+\.png)[\s\S]*?(?:Caption|📝\s*Caption):?\s*\n([\s\S]*?)(?=Hashtags:|#️⃣|Full Post|---|\n\n✅|\n\n📷|$)/gi;
+
+        while ((match = campaignPostPattern.exec(text)) !== null) {
             const imagePath = match[1].startsWith('/') ? match[1] : '/' + match[1];
-            const captionText = match[2].trim();
-            
-            // Extract hashtags from the section
-            const hashtagMatch = text.slice(match.index, match.index + 1000).match(/#[a-zA-Z][a-zA-Z0-9_]*/g);
-            
-            pairs.push({
-                image: imagePath,
-                caption: captionText.replace(/\*\*/g, '').substring(0, 500),
-                hashtags: hashtagMatch ? hashtagMatch.slice(0, 20) : []
-            });
+            let captionText = match[2].trim();
+
+            // Clean up caption
+            captionText = captionText.replace(/\*\*/g, '').replace(/^\s*\n/gm, '').trim();
+
+            // Extract hashtags after caption section
+            const afterCaption = text.slice(match.index + match[0].length, match.index + match[0].length + 1500);
+            const hashtagMatch = afterCaption.match(/#[a-zA-Z][a-zA-Z0-9_]*/g);
+
+            if (!pairs.find(p => p.image === imagePath)) {
+                pairs.push({
+                    image: imagePath,
+                    caption: captionText.substring(0, 800),
+                    hashtags: hashtagMatch ? hashtagMatch.slice(0, 25) : []
+                });
+            }
         }
-        
-        // Pattern 2: Simple image + caption format (handles emoji variants)
+
+        // Pattern 1.5: Carousel completion format - table with images + shared caption/hashtags at end
+        // Handles the "🎊 Carousel Complete!" format with table of slides
         if (pairs.length === 0) {
-            const simplePattern = /(?:(?:Here's|Generated|Created|📸\s*Image|Image)[^\n]*?(\/generated\/[^\s\)\"\'\`<>]+\.png))[\s\S]*?(?:Caption[:\s]*\n?([\s\S]*?)(?=\n\n|Hashtag|#️⃣|$))?/gi;
-            
-            while ((match = simplePattern.exec(text)) !== null) {
-                const imagePath = match[1].startsWith('/') ? match[1] : '/' + match[1];
-                const captionText = match[2] ? match[2].trim() : '';
-                
-                // Extract hashtags near this section
-                const hashtagMatch = text.slice(match.index, match.index + 500).match(/#[a-zA-Z][a-zA-Z0-9_]*/g);
-                
+            // First check if this looks like a carousel completion message
+            const isCarouselComplete = text.includes('Carousel Complete') || text.includes('carousel complete') ||
+                                       (text.includes('Slide') && text.includes('Headline') && text.includes('Image'));
+
+            if (isCarouselComplete) {
+                // Extract the shared caption for all carousel slides
+                const captionMatch = text.match(/(?:📝\s*)?(?:\*\*)?Caption(?:\*\*)?:?\s*\n?([\s\S]*?)(?=(?:#️⃣|📌)\s*(?:\*\*)?Hashtags|\n---|\n\n\*\*What|$)/i);
+                const sharedCaption = captionMatch ? captionMatch[1].trim().replace(/\*\*/g, '').substring(0, 800) : '';
+
+                // Extract hashtags
+                const hashtagMatch = text.match(/#[a-zA-Z][a-zA-Z0-9_]*/g);
+                const sharedHashtags = hashtagMatch ? hashtagMatch.slice(0, 25) : [];
+
+                console.log('🎠 Carousel complete detected, shared caption:', sharedCaption.substring(0, 50));
+                console.log('🎠 Shared hashtags:', sharedHashtags.length);
+
+                // Extract all image paths from the carousel (from table or View Image links)
+                const imagePatterns = [
+                    /\[📷[^\]]*\]\((\/generated\/[^\)]+\.png)\)/gi,  // [📷 View Image](/generated/xxx.png)
+                    /\|\s*(\/generated\/[^\|\s\n]+\.png)\s*\|/gi,  // Plain path in table cell: | /generated/xxx.png |
+                    /\|\s*\[?📷?[^\]]*\]?\(?(\/generated\/[^\)\|\s]+\.png)\)?/gi,  // Table cell with brackets
+                    /(?:📸\s*)?(?:\*\*)?Image(?:\*\*)?:?\s*(?:\[📷[^\]]*\]\()?(\/generated\/[^\s\)\n]+\.png)\)?/gi,  // 📸 Image: format
+                    /(\/generated\/post_[a-zA-Z0-9_]+\.png)/gi,  // Direct path: /generated/post_xxx.png
+                ];
+
+                const foundImages = new Set();
+                imagePatterns.forEach((pattern, idx) => {
+                    let imgMatch;
+                    while ((imgMatch = pattern.exec(text)) !== null) {
+                        let imgPath = imgMatch[1];
+                        if (imgPath && !imgPath.startsWith('/')) imgPath = '/' + imgPath;
+                        if (imgPath && imgPath.includes('/generated/')) {
+                            foundImages.add(imgPath);
+                            console.log(`🎠 Pattern ${idx} matched:`, imgPath);
+                        }
+                    }
+                });
+                console.log('🎠 Total unique carousel images found:', foundImages.size);
+
+                // Add each carousel image with the shared caption/hashtags
+                foundImages.forEach(imagePath => {
+                    if (!pairs.find(p => p.image === imagePath)) {
+                        pairs.push({
+                            image: imagePath,
+                            caption: sharedCaption,
+                            hashtags: sharedHashtags
+                        });
+                        console.log('🎠 Added carousel image with shared caption:', imagePath);
+                    }
+                });
+            }
+        }
+
+        // Pattern 1.6: Individual carousel slide format - "🎉 Slide X of Y:" (without shared caption)
+        // For slides shown during generation (before carousel is complete)
+        if (pairs.length === 0) {
+            const carouselSlidePattern = /(?:🎉\s*)?Slide\s*(\d+)\s*of\s*(\d+):?\s*[^\n]*\n+(?:📸\s*)?(?:\*\*)?Image(?:\*\*)?:?\s*(?:\[📷[^\]]*\]\()?([^\s\)\"\'\`<>\n]+\.png)\)?/gi;
+
+            while ((match = carouselSlidePattern.exec(text)) !== null) {
+                let imagePath = match[3];
+                if (!imagePath.startsWith('/')) {
+                    imagePath = '/' + imagePath;
+                }
+
+                // For individual slides, look for description after the image
+                const slideSection = text.slice(match.index, match.index + 500);
+                const descMatch = slideSection.match(/This slide[^\n]*/i);
+                const description = descMatch ? descMatch[0] : '';
+
                 if (!pairs.find(p => p.image === imagePath)) {
                     pairs.push({
                         image: imagePath,
-                        caption: captionText.replace(/\*\*/g, '').substring(0, 500),
-                        hashtags: hashtagMatch ? hashtagMatch.slice(0, 20) : []
+                        caption: description,
+                        hashtags: []
+                    });
+                    console.log('🎠 Found individual carousel slide:', match[1], 'of', match[2], imagePath);
+                }
+            }
+        }
+
+        // Pattern 2: Structured format with **📸 Image:** and **📝 Caption:** (flexible matching)
+        if (pairs.length === 0) {
+            // More flexible pattern that handles variations like:
+            // **📸 Image:** /generated/xxx.png
+            // **📝 Caption:**
+            // caption text...
+            const structuredPattern = /\*\*(?:📸\s*)?Image:?\*\*\s*(\/generated\/[^\s\n]+\.png)[\s\S]*?\*\*(?:📝\s*)?Caption:?\*\*\s*\n?([\s\S]*?)(?=\*\*(?:#️⃣|Hashtags)|#️⃣\s*(?:\*\*)?Hashtags|\n---|\n\*\*What|\n\nOptions:)/gi;
+
+            while ((match = structuredPattern.exec(text)) !== null) {
+                const imagePath = match[1].startsWith('/') ? match[1] : '/' + match[1];
+                let captionText = match[2].trim();
+                captionText = captionText.replace(/\*\*/g, '').replace(/^\s*\n/gm, '').trim();
+
+                const afterCaption = text.slice(match.index + match[0].length, match.index + match[0].length + 1000);
+                const hashtagMatch = afterCaption.match(/#[a-zA-Z][a-zA-Z0-9_]*/g);
+
+                if (!pairs.find(p => p.image === imagePath)) {
+                    pairs.push({
+                        image: imagePath,
+                        caption: captionText.substring(0, 800),
+                        hashtags: hashtagMatch ? hashtagMatch.slice(0, 25) : []
                     });
                 }
             }
         }
-        
+
+        // Pattern 3: Single post format - "Here's your single post" or similar
+        if (pairs.length === 0) {
+            const singlePostPattern = /(?:Here's your|Here is your|Your)[^\n]*?(?:post|image)[^\n]*\n+(?:📷\s*)?(?:\*\*)?Image(?:\*\*)?:?\s*[^\n]*?(\/generated\/[^\s\)\"\'\`<>\n]+\.png)[\s\S]*?(?:Caption|📝\s*Caption):?\s*\n([\s\S]*?)(?=Hashtags:|#️⃣|Full Post|---|\n\n\*\*What|$)/gi;
+
+            while ((match = singlePostPattern.exec(text)) !== null) {
+                const imagePath = match[1].startsWith('/') ? match[1] : '/' + match[1];
+                let captionText = match[2].trim();
+                captionText = captionText.replace(/\*\*/g, '').replace(/^\s*\n/gm, '').trim();
+
+                const afterCaption = text.slice(match.index + match[0].length, match.index + match[0].length + 1000);
+                const hashtagMatch = afterCaption.match(/#[a-zA-Z][a-zA-Z0-9_]*/g);
+
+                if (!pairs.find(p => p.image === imagePath)) {
+                    pairs.push({
+                        image: imagePath,
+                        caption: captionText.substring(0, 800),
+                        hashtags: hashtagMatch ? hashtagMatch.slice(0, 25) : []
+                    });
+                }
+            }
+        }
+
+        // Pattern 4: Generic image path with nearby Caption: section
+        if (pairs.length === 0) {
+            const genericPattern = /(\/generated\/[^\s\)\"\'\`<>\n]+\.png)[\s\S]{0,200}?(?:Caption|📝):?\s*\n([\s\S]*?)(?=Hashtags:|#️⃣|Full Post|---|\n\n\n|$)/gi;
+
+            while ((match = genericPattern.exec(text)) !== null) {
+                const imagePath = match[1].startsWith('/') ? match[1] : '/' + match[1];
+                let captionText = match[2].trim();
+                captionText = captionText.replace(/\*\*/g, '').replace(/^\s*\n/gm, '').trim();
+
+                const afterCaption = text.slice(match.index + match[0].length, match.index + match[0].length + 500);
+                const hashtagMatch = afterCaption.match(/#[a-zA-Z][a-zA-Z0-9_]*/g);
+
+                if (!pairs.find(p => p.image === imagePath)) {
+                    pairs.push({
+                        image: imagePath,
+                        caption: captionText.substring(0, 800),
+                        hashtags: hashtagMatch ? hashtagMatch.slice(0, 25) : []
+                    });
+                }
+            }
+        }
+
+        console.log('📋 Extracted image-caption pairs:', pairs);
         return pairs;
     }
     
     // Add image to gallery WITH associated caption
     addImageToGalleryWithCaption(imagePath, caption, hashtags) {
+        // Sanitize image path - remove any markdown/prefix artifacts
+        imagePath = this.sanitizeImagePath(imagePath);
+        if (!imagePath) return;
+
+        // Save metadata for this image (for persistence)
+        if (!this.generatedImagesMeta) this.generatedImagesMeta = {};
+        this.generatedImagesMeta[imagePath] = {
+            caption: caption || '',
+            hashtags: hashtags || []
+        };
+
         this.emptyState.hidden = true;
         this.contentGrid.hidden = false;
         this.galleryActions.hidden = false;
-        
+
         const card = document.createElement('div');
         card.className = 'content-card image-with-caption-card';
-        
+
         const filename = imagePath.split('/').pop();
         const timestamp = new Date().toLocaleTimeString();
-        const captionPreview = caption ? caption.substring(0, 100) + (caption.length > 100 ? '...' : '') : '';
-        const hashtagsHtml = hashtags && hashtags.length > 0 
-            ? `<div class="card-hashtags">${hashtags.slice(0, 8).map(h => `<span class="card-hashtag">${h}</span>`).join('')}</div>`
-            : '';
-        
+        const captionPreview = caption ? caption.substring(0, 150) + (caption.length > 150 ? '...' : '') : '';
+        const hashtagsStr = hashtags && hashtags.length > 0 ? hashtags.join(' ') : '';
+
         card.innerHTML = `
             <div class="card-image" data-image="${imagePath}">
                 <img src="${imagePath}" alt="Generated content">
@@ -2353,23 +2589,53 @@ class ContentStudioApp {
                     </div>
                 </div>
             </div>
-            ${caption ? `
-            <div class="card-caption-section">
-                <div class="card-caption-preview">${captionPreview}</div>
-                ${caption.length > 100 ? `
+            <div class="card-caption-section ${!caption && !hashtagsStr ? 'hidden' : ''}">
+                ${caption ? `
+                <div class="caption-header">
+                    <span class="caption-label">📝 Caption</span>
+                    <button class="copy-btn copy-caption-btn" title="Copy caption">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
+                        </svg>
+                        Copy
+                    </button>
+                </div>
+                <div class="card-caption-text">${captionPreview}</div>
+                ${caption.length > 150 ? `
                 <button class="expand-caption-btn" data-expanded="false">
-                    <span>📝</span> View Full Caption
+                    View Full Caption ▼
                 </button>
                 <div class="card-caption-full">${caption.replace(/\n/g, '<br>')}</div>
                 ` : ''}
-                ${hashtagsHtml}
+                ` : ''}
+                ${hashtagsStr ? `
+                <div class="hashtags-section">
+                    <div class="hashtags-header">
+                        <span class="hashtags-label">#️⃣ Hashtags</span>
+                        <button class="copy-btn copy-hashtags-btn" title="Copy hashtags">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
+                            </svg>
+                            Copy
+                        </button>
+                    </div>
+                    <div class="card-hashtags-text">${hashtagsStr}</div>
+                </div>
+                ` : ''}
+                ${caption && hashtagsStr ? `
+                <div class="copy-all-section">
+                    <button class="copy-btn copy-all-btn" title="Copy caption + hashtags">
+                        📋 Copy Full Post
+                    </button>
+                </div>
+                ` : ''}
             </div>
-            ` : ''}
             <div class="card-info">
                 <div class="card-meta">
                     <span class="card-badge">New</span>
                     <span>${timestamp}</span>
-                    ${caption ? '<span>• Caption ✓</span>' : ''}
                 </div>
             </div>
         `;
@@ -2384,7 +2650,7 @@ class ContentStudioApp {
             e.stopPropagation();
             this.downloadImage(imagePath, filename);
         });
-        
+
         // Expand caption handler
         const expandBtn = card.querySelector('.expand-caption-btn');
         if (expandBtn) {
@@ -2392,31 +2658,210 @@ class ContentStudioApp {
                 e.stopPropagation();
                 const fullCaption = card.querySelector('.card-caption-full');
                 const isExpanded = expandBtn.dataset.expanded === 'true';
-                
+
                 if (isExpanded) {
                     fullCaption.classList.remove('expanded');
-                    expandBtn.innerHTML = '<span>📝</span> View Full Caption';
+                    expandBtn.textContent = 'View Full Caption ▼';
                     expandBtn.dataset.expanded = 'false';
                 } else {
                     fullCaption.classList.add('expanded');
-                    expandBtn.innerHTML = '<span>📝</span> Hide Caption';
+                    expandBtn.textContent = 'Hide Caption ▲';
                     expandBtn.dataset.expanded = 'true';
                 }
             });
         }
-        
+
+        // Copy caption handler
+        const copyCaptionBtn = card.querySelector('.copy-caption-btn');
+        if (copyCaptionBtn && caption) {
+            copyCaptionBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.copyToClipboard(caption, copyCaptionBtn);
+            });
+        }
+
+        // Copy hashtags handler
+        const copyHashtagsBtn = card.querySelector('.copy-hashtags-btn');
+        if (copyHashtagsBtn && hashtagsStr) {
+            copyHashtagsBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.copyToClipboard(hashtagsStr, copyHashtagsBtn);
+            });
+        }
+
+        // Copy full post handler (caption + hashtags)
+        const copyAllBtn = card.querySelector('.copy-all-btn');
+        if (copyAllBtn && caption && hashtagsStr) {
+            copyAllBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const fullPost = `${caption}\n\n.\n.\n.\n\n${hashtagsStr}`;
+                this.copyToClipboard(fullPost, copyAllBtn);
+            });
+        }
+
         // Store the full caption and hashtags on the card for copying
         card.dataset.caption = caption || '';
-        card.dataset.hashtags = hashtags ? hashtags.join(' ') : '';
-        
+        card.dataset.hashtags = hashtagsStr;
+
         this.contentGrid.insertBefore(card, this.contentGrid.firstChild);
     }
-    
+
+    // Update an existing gallery card with caption and hashtags (for carousel completion)
+    updateGalleryCardWithCaption(imagePath, caption, hashtags) {
+        imagePath = this.sanitizeImagePath(imagePath);
+        if (!imagePath) return;
+
+        // Update metadata
+        if (!this.generatedImagesMeta) this.generatedImagesMeta = {};
+        this.generatedImagesMeta[imagePath] = {
+            caption: caption || '',
+            hashtags: hashtags || []
+        };
+
+        // Find the existing card by image path
+        const existingCard = this.contentGrid.querySelector(`.card-image[data-image="${imagePath}"]`)?.closest('.content-card');
+
+        if (existingCard) {
+            console.log('🔄 Found existing card, updating with caption/hashtags');
+
+            const hashtagsStr = hashtags && hashtags.length > 0 ? hashtags.join(' ') : '';
+            const captionPreview = caption ? caption.substring(0, 150) + (caption.length > 150 ? '...' : '') : '';
+
+            // Check if caption section already exists
+            let captionSection = existingCard.querySelector('.card-caption-section');
+
+            if (!captionSection) {
+                // Create new caption section
+                captionSection = document.createElement('div');
+                captionSection.className = 'card-caption-section';
+
+                // Insert before the card-info section
+                const cardInfo = existingCard.querySelector('.card-info');
+                if (cardInfo) {
+                    existingCard.insertBefore(captionSection, cardInfo);
+                } else {
+                    existingCard.appendChild(captionSection);
+                }
+            }
+
+            // Update caption section content
+            captionSection.classList.remove('hidden');
+            captionSection.innerHTML = `
+                ${caption ? `
+                <div class="caption-header">
+                    <span class="caption-label">📝 Caption</span>
+                    <button class="copy-btn copy-caption-btn" title="Copy caption">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
+                        </svg>
+                        Copy
+                    </button>
+                </div>
+                <div class="card-caption-text">${captionPreview}</div>
+                ${caption.length > 150 ? `
+                <button class="expand-caption-btn" data-expanded="false">
+                    View Full Caption ▼
+                </button>
+                <div class="card-caption-full">${caption.replace(/\n/g, '<br>')}</div>
+                ` : ''}
+                ` : ''}
+                ${hashtagsStr ? `
+                <div class="hashtags-section">
+                    <div class="hashtags-header">
+                        <span class="hashtags-label">#️⃣ Hashtags</span>
+                        <button class="copy-btn copy-hashtags-btn" title="Copy hashtags">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
+                            </svg>
+                            Copy
+                        </button>
+                    </div>
+                    <div class="card-hashtags-text">${hashtagsStr}</div>
+                </div>
+                ` : ''}
+                ${caption && hashtagsStr ? `
+                <div class="copy-all-section">
+                    <button class="copy-btn copy-all-btn" title="Copy caption + hashtags">
+                        📋 Copy Full Post
+                    </button>
+                </div>
+                ` : ''}
+            `;
+
+            // Update data attributes
+            existingCard.dataset.caption = caption || '';
+            existingCard.dataset.hashtags = hashtagsStr;
+
+            // Re-attach event handlers for copy buttons
+            this.attachCaptionCopyHandlers(existingCard, caption, hashtagsStr);
+
+            console.log('✅ Updated card with caption/hashtags');
+        } else {
+            console.log('⚠️ Could not find existing card for:', imagePath);
+        }
+    }
+
+    // Attach copy handlers to caption section buttons
+    attachCaptionCopyHandlers(card, caption, hashtagsStr) {
+        const copyCaptionBtn = card.querySelector('.copy-caption-btn');
+        if (copyCaptionBtn) {
+            copyCaptionBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                navigator.clipboard.writeText(caption || '');
+                this.showToast('Caption copied!');
+            });
+        }
+
+        const copyHashtagsBtn = card.querySelector('.copy-hashtags-btn');
+        if (copyHashtagsBtn) {
+            copyHashtagsBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                navigator.clipboard.writeText(hashtagsStr || '');
+                this.showToast('Hashtags copied!');
+            });
+        }
+
+        const copyAllBtn = card.querySelector('.copy-all-btn');
+        if (copyAllBtn) {
+            copyAllBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const fullPost = `${caption || ''}\n\n${hashtagsStr || ''}`.trim();
+                navigator.clipboard.writeText(fullPost);
+                this.showToast('Full post copied!');
+            });
+        }
+
+        const expandBtn = card.querySelector('.expand-caption-btn');
+        if (expandBtn) {
+            expandBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const fullCaption = card.querySelector('.card-caption-full');
+                const isExpanded = expandBtn.dataset.expanded === 'true';
+
+                if (isExpanded) {
+                    fullCaption.classList.remove('expanded');
+                    expandBtn.textContent = 'View Full Caption ▼';
+                    expandBtn.dataset.expanded = 'false';
+                } else {
+                    fullCaption.classList.add('expanded');
+                    expandBtn.textContent = 'Hide Full Caption ▲';
+                    expandBtn.dataset.expanded = 'true';
+                }
+            });
+        }
+    }
+
     addImageToGallery(imagePath) {
+        // Sanitize image path - remove any markdown/prefix artifacts
+        imagePath = this.sanitizeImagePath(imagePath);
+        if (!imagePath) return;
+
         this.emptyState.hidden = true;
         this.contentGrid.hidden = false;
         this.galleryActions.hidden = false;
-        
+
         const card = document.createElement('div');
         const filename = imagePath.split('/').pop();
         const timestamp = new Date().toLocaleTimeString();
@@ -2592,19 +3037,72 @@ class ContentStudioApp {
         });
     }
     
-    async copyToClipboard() {
-        let text = this.currentCaption || '';
-        if (this.currentHashtags.length > 0) {
-            text += '\n\n' + this.currentHashtags.join(' ');
+    sanitizeImagePath(imagePath) {
+        // Clean up malformed image paths that may have markdown artifacts
+        if (!imagePath) return null;
+
+        // Decode URL encoding first
+        try {
+            imagePath = decodeURIComponent(imagePath);
+        } catch (e) {
+            // Already decoded or invalid
         }
-        
+
+        // Remove markdown prefixes like **📸 Image:** or **Image:**
+        imagePath = imagePath.replace(/^\*\*[^*]*\*\*\s*/g, '');
+        imagePath = imagePath.replace(/^📸\s*Image:\s*/gi, '');
+        imagePath = imagePath.replace(/^Image:\s*/gi, '');
+
+        // Extract path from markdown link format [text](path)
+        const linkMatch = imagePath.match(/\[([^\]]*)\]\(([^)]+)\)/);
+        if (linkMatch) {
+            imagePath = linkMatch[2];
+        }
+
+        // Ensure it starts with /generated/ and ends with .png or image extension
+        if (imagePath.includes('/generated/')) {
+            // Extract just the /generated/xxx.png part
+            const genMatch = imagePath.match(/(\/generated\/[a-zA-Z0-9_-]+\.(?:png|jpg|jpeg|gif|webp))/i);
+            if (genMatch) {
+                imagePath = genMatch[1];
+            }
+        }
+
+        // Final validation
+        if (!imagePath.startsWith('/generated/') || !imagePath.match(/\.(png|jpg|jpeg|gif|webp)$/i)) {
+            console.warn('Invalid image path after sanitization:', imagePath);
+            return null;
+        }
+
+        return imagePath;
+    }
+
+    async copyToClipboard(text = null, button = null) {
+        // If no text provided, use the current caption/hashtags from bottom panel
+        if (!text) {
+            text = this.currentCaption || '';
+            if (this.currentHashtags.length > 0) {
+                text += '\n\n' + this.currentHashtags.join(' ');
+            }
+            button = this.copyCaption;
+        }
+
         try {
             await navigator.clipboard.writeText(text);
-            this.copyCaption.innerHTML = '✓ Copied!';
-            setTimeout(() => {
-                this.copyCaption.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg> Copy';
-            }, 2000);
-        } catch (err) {}
+
+            // Show success feedback on the button
+            if (button) {
+                const originalHtml = button.innerHTML;
+                button.innerHTML = '✓ Copied!';
+                button.classList.add('copied');
+                setTimeout(() => {
+                    button.innerHTML = originalHtml;
+                    button.classList.remove('copied');
+                }, 2000);
+            }
+        } catch (err) {
+            console.error('Copy failed:', err);
+        }
     }
     
     openModal(imagePath) {
@@ -2722,6 +3220,374 @@ class ContentStudioApp {
                     item.style.display = '';
             }
         });
+    }
+
+    // =========================================================================
+    // STRUCTURED RESPONSE HANDLING (from format_response_for_user tool)
+    // =========================================================================
+
+    /**
+     * Try to parse structured JSON response from format_response_for_user tool
+     * The tool outputs JSON that may be embedded in the agent's response
+     * @param {string} text - The full message text
+     * @returns {Object|null} Parsed structured response or null
+     */
+    parseStructuredResponse(text) {
+        try {
+            // Pattern 1: Pure JSON response
+            if (text.trim().startsWith('{') && text.trim().endsWith('}')) {
+                const parsed = JSON.parse(text.trim());
+                if (parsed.text !== undefined && parsed.has_choices !== undefined) {
+                    console.log('📋 Parsed pure JSON structured response');
+                    return parsed;
+                }
+            }
+
+            // Pattern 2: JSON embedded in text (tool output)
+            // Look for JSON block that contains our expected fields
+            const jsonPattern = /\{[^{}]*"text"\s*:\s*"[^"]*"[^{}]*"has_choices"\s*:\s*(true|false)[^{}]*\}/gs;
+            const matches = text.match(jsonPattern);
+
+            if (matches) {
+                for (const match of matches) {
+                    try {
+                        const parsed = JSON.parse(match);
+                        if (parsed.text !== undefined && parsed.has_choices !== undefined) {
+                            console.log('📋 Parsed embedded JSON structured response');
+                            return parsed;
+                        }
+                    } catch (e) {
+                        continue;
+                    }
+                }
+            }
+
+            // Pattern 3: Look for JSON with nested choices array
+            const complexJsonPattern = /\{[\s\S]*?"text"\s*:\s*"[\s\S]*?"[\s\S]*?"choices"\s*:\s*\[[\s\S]*?\][\s\S]*?\}/g;
+            const complexMatches = text.match(complexJsonPattern);
+
+            if (complexMatches) {
+                for (const match of complexMatches) {
+                    try {
+                        // Clean up the match - handle escaped newlines in JSON strings
+                        const cleanMatch = match.replace(/\n/g, '\\n');
+                        const parsed = JSON.parse(cleanMatch);
+                        if (parsed.text !== undefined) {
+                            console.log('📋 Parsed complex JSON structured response');
+                            return parsed;
+                        }
+                    } catch (e) {
+                        continue;
+                    }
+                }
+            }
+
+            return null;
+        } catch (e) {
+            console.log('📋 No structured response found, using text fallback');
+            return null;
+        }
+    }
+
+    /**
+     * Handle structured response from format_response_for_user tool
+     * @param {Object} response - The parsed structured response
+     * @param {HTMLElement} messageElement - The message text element to update
+     */
+    handleStructuredResponse(response, messageElement) {
+        console.log('🎯 Handling structured response:', response);
+
+        // Update the message text (render markdown)
+        if (messageElement) {
+            this.updateMessage(messageElement, response.text);
+        }
+
+        // Parse for images in the text
+        this.parseAssistantResponse(response.text);
+        this.updateRightPanel(response.text);
+
+        // Render choices if present
+        if (response.has_choices && response.choices && response.choices.length > 0) {
+            const contentEl = messageElement?.closest('.message')?.querySelector('.message-content');
+            if (contentEl) {
+                this.renderStructuredChoiceButtons(response, contentEl);
+            }
+        }
+
+        // Update input placeholder if provided
+        if (response.input_placeholder) {
+            this.chatInput.placeholder = response.input_placeholder;
+        }
+
+        // Show input hint if provided
+        if (response.input_hint && response.allow_free_input) {
+            this.showInputHint(response.input_hint);
+        }
+    }
+
+    /**
+     * Render choice buttons from structured response
+     * @param {Object} response - The structured response with choices
+     * @param {HTMLElement} messageContentElement - The message content element
+     */
+    renderStructuredChoiceButtons(response, messageContentElement) {
+        const { choices, choice_type, allow_free_input, input_hint } = response;
+
+        if (!choices || choices.length === 0) return;
+
+        // Remove any existing choice buttons
+        const existingButtons = messageContentElement.querySelector('.choice-buttons-container');
+        if (existingButtons) {
+            existingButtons.remove();
+        }
+
+        const container = document.createElement('div');
+        container.className = `choice-buttons-container choice-type-${choice_type || 'single_select'}`;
+
+        choices.forEach(choice => {
+            const btn = document.createElement('button');
+            btn.className = 'choice-button';
+            btn.dataset.choiceId = choice.id;
+            btn.dataset.choiceValue = choice.value;
+
+            // Build button content
+            let btnContent = '';
+            if (choice.icon) {
+                btnContent += `<span class="choice-icon">${choice.icon}</span>`;
+            }
+            btnContent += `<span class="choice-label">${choice.label}</span>`;
+
+            btn.innerHTML = btnContent;
+
+            // Add description as tooltip
+            if (choice.description) {
+                btn.title = choice.description;
+
+                // Also add as subtitle for menu type
+                if (choice_type === 'menu') {
+                    btn.innerHTML += `<span class="choice-description">${choice.description}</span>`;
+                    btn.classList.add('has-description');
+                }
+            }
+
+            // Click handler
+            btn.addEventListener('click', () => {
+                // Send the choice value as the user's message
+                this.chatInput.value = choice.value;
+                this.sendMessage();
+
+                // Mark this choice as selected and disable all buttons
+                container.querySelectorAll('.choice-button').forEach(b => {
+                    b.disabled = true;
+                    b.classList.add('disabled');
+                });
+                btn.classList.add('selected');
+
+                // Reset input placeholder
+                this.chatInput.placeholder = 'Type your message...';
+                this.hideInputHint();
+            });
+
+            container.appendChild(btn);
+        });
+
+        // Add hint for free input if allowed
+        if (allow_free_input && input_hint) {
+            const hint = document.createElement('div');
+            hint.className = 'choice-input-hint';
+            hint.textContent = input_hint;
+            container.appendChild(hint);
+        }
+
+        messageContentElement.appendChild(container);
+    }
+
+    /**
+     * Show input hint above the chat input
+     * @param {string} hintText - The hint text to display
+     */
+    showInputHint(hintText) {
+        // Remove existing hint
+        this.hideInputHint();
+
+        const inputWrapper = document.querySelector('.chat-input-wrapper');
+        if (inputWrapper) {
+            const hint = document.createElement('div');
+            hint.className = 'chat-input-hint';
+            hint.textContent = hintText;
+            inputWrapper.insertBefore(hint, inputWrapper.firstChild);
+        }
+    }
+
+    /**
+     * Hide the input hint
+     */
+    hideInputHint() {
+        document.querySelector('.chat-input-hint')?.remove();
+    }
+
+    // =========================================================================
+    // FALLBACK: TEXT-BASED CHOICE DETECTION AND BUTTON RENDERING
+    // =========================================================================
+
+    /**
+     * Detect choice options in agent messages and return structured choices
+     * This is the fallback when format_response_for_user tool is not used
+     * @param {string} text - The message text to analyze
+     * @returns {Array} Array of choice objects {icon, label, value, description}
+     */
+    detectChoicesInMessage(text) {
+        const choices = [];
+        const seenLabels = new Set();
+
+        // Extended emoji set for matching
+        const emojiSet = '📸📅🖼️✨🎬✏️🔄✅❌👍👎📊📝🚀💡🎯🎨📱💼🔥⭐';
+
+        // Pattern 1a: Emoji OUTSIDE bold - 📸 **Single Post** - description
+        const emojiOutsidePattern = new RegExp(`([${emojiSet}])\\s*\\*\\*([^*]+)\\*\\*\\s*[-–—:]\\s*([^\\n]+)`, 'g');
+        let match;
+        while ((match = emojiOutsidePattern.exec(text)) !== null) {
+            const icon = match[1].trim();
+            const label = match[2].trim();
+            const description = match[3].trim();
+
+            if (!seenLabels.has(label.toLowerCase())) {
+                seenLabels.add(label.toLowerCase());
+                choices.push({
+                    icon: icon,
+                    label: label,
+                    value: label,
+                    description: description
+                });
+            }
+        }
+
+        // Pattern 1b: Emoji INSIDE bold - **📸 Single Post** - description (original pattern)
+        const emojiInsidePattern = new RegExp(`\\*\\*([${emojiSet}]\\s*[^*]+)\\*\\*\\s*[-–—:]\\s*([^\\n*]+)`, 'g');
+        while ((match = emojiInsidePattern.exec(text)) !== null) {
+            const fullLabel = match[1].trim();
+            const description = match[2].trim();
+            const iconMatch = fullLabel.match(new RegExp(`^([${emojiSet}])`));
+            const icon = iconMatch ? iconMatch[1] : '';
+            const cleanLabel = fullLabel.replace(new RegExp(`^[${emojiSet}]\\s*`), '').trim();
+
+            if (!seenLabels.has(cleanLabel.toLowerCase())) {
+                seenLabels.add(cleanLabel.toLowerCase());
+                choices.push({
+                    icon: icon,
+                    label: cleanLabel,
+                    value: cleanLabel,
+                    description: description
+                });
+            }
+        }
+
+        // Pattern 2: Inline parenthetical choices like (yes / no / skip) or (approve / tweak / skip)
+        const inlinePattern = /\(([^)]+(?:\s*\/\s*[^)]+)+)\)/g;
+        while ((match = inlinePattern.exec(text)) !== null) {
+            const optionsStr = match[1];
+            const options = optionsStr.split(/\s*\/\s*/);
+            options.forEach(opt => {
+                const cleanOpt = opt.trim().replace(/\*\*/g, '');
+                if (cleanOpt && !seenLabels.has(cleanOpt.toLowerCase())) {
+                    seenLabels.add(cleanOpt.toLowerCase());
+                    choices.push({
+                        icon: this.getChoiceIcon(cleanOpt),
+                        label: cleanOpt,
+                        value: cleanOpt,
+                        description: ''
+                    });
+                }
+            });
+        }
+
+        // Pattern 3: Question-style options ending with ? followed by choices
+        // e.g., "Approve Week 1? (yes / tweak something / skip)"
+        // Already covered by Pattern 2
+
+        // Pattern 4: "Would you like to:" followed by bullet options
+        const bulletOptionsPattern = /(?:would you like to|want to|options|you can)[:.]?\s*\n((?:\s*[-•*]\s*[^\n]+\n?)+)/gi;
+        while ((match = bulletOptionsPattern.exec(text)) !== null) {
+            const bulletBlock = match[1];
+            const bulletPattern = /[-•*]\s*\*?\*?["']?([^"'\n*]+)["']?\*?\*?/g;
+            let bulletMatch;
+            while ((bulletMatch = bulletPattern.exec(bulletBlock)) !== null) {
+                const opt = bulletMatch[1].trim().replace(/[-–—].*$/, '').trim();
+                if (opt && opt.length < 50 && !seenLabels.has(opt.toLowerCase())) {
+                    seenLabels.add(opt.toLowerCase());
+                    choices.push({
+                        icon: this.getChoiceIcon(opt),
+                        label: opt,
+                        value: opt,
+                        description: ''
+                    });
+                }
+            }
+        }
+
+        // Only return choices if we found meaningful options (2-6 choices typically)
+        if (choices.length >= 2 && choices.length <= 8) {
+            return choices;
+        }
+        return [];
+    }
+
+    /**
+     * Get an appropriate icon for a choice based on its text
+     */
+    getChoiceIcon(text) {
+        const lower = text.toLowerCase();
+        if (lower.includes('yes') || lower.includes('approve') || lower.includes('confirm')) return '✅';
+        if (lower.includes('no') || lower.includes('cancel') || lower.includes('reject')) return '❌';
+        if (lower.includes('skip')) return '⏭️';
+        if (lower.includes('edit') || lower.includes('tweak') || lower.includes('change')) return '✏️';
+        if (lower.includes('done') || lower.includes('finish')) return '🎉';
+        if (lower.includes('single') || lower.includes('post')) return '📸';
+        if (lower.includes('campaign')) return '📅';
+        if (lower.includes('carousel')) return '🖼️';
+        if (lower.includes('quick') || lower.includes('image') || lower.includes('general')) return '✨';
+        if (lower.includes('animate')) return '🎬';
+        if (lower.includes('caption')) return '📝';
+        if (lower.includes('hashtag')) return '#️⃣';
+        return '';
+    }
+
+    /**
+     * Render choice buttons below a message
+     * @param {Array} choices - Array of choice objects
+     * @param {HTMLElement} messageContentElement - The message content element to append to
+     */
+    renderChoiceButtons(choices, messageContentElement) {
+        if (!choices || choices.length === 0) return;
+
+        const container = document.createElement('div');
+        container.className = 'choice-buttons-container';
+
+        choices.forEach(choice => {
+            const btn = document.createElement('button');
+            btn.className = 'choice-button';
+            btn.innerHTML = `${choice.icon ? `<span class="choice-icon">${choice.icon}</span>` : ''}${choice.label}`;
+            if (choice.description) {
+                btn.title = choice.description;
+            }
+
+            btn.addEventListener('click', () => {
+                // Send the choice as a message
+                this.chatInput.value = choice.value;
+                this.sendMessage();
+
+                // Mark this choice as selected and disable all buttons
+                container.querySelectorAll('.choice-button').forEach(b => {
+                    b.disabled = true;
+                    b.classList.add('disabled');
+                });
+                btn.classList.add('selected');
+            });
+
+            container.appendChild(btn);
+        });
+
+        messageContentElement.appendChild(container);
     }
 }
 

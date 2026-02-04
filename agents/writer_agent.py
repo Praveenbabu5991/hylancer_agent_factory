@@ -5,10 +5,14 @@ Takes selected ideas and brand context to create comprehensive
 visual briefs for image generation.
 """
 
+print("📦 Loading writer_agent.py...")
+
 from google.adk.agents import LlmAgent
 from config.models import get_writer_model
 from prompts.writer_agent import WRITER_AGENT_PROMPT
 from memory.store import recall_from_memory
+
+print(f"✍️ Creating WriterAgent with model: {get_writer_model()}")
 
 
 def create_post_brief(

@@ -555,30 +555,71 @@ async def chat(request: ChatRequest):
     )
 
 
+def sanitize_unicode(text: str) -> str:
+    """
+    Remove invalid Unicode characters (surrogates) that can cause serialization errors.
+
+    Some emoji characters, when improperly encoded, can result in surrogate pairs
+    that are invalid in UTF-8. This function removes them to prevent
+    PydanticSerializationError.
+    """
+    if not text:
+        return text
+
+    # Remove surrogate characters (U+D800 to U+DFFF)
+    # These are invalid in UTF-8 and cause serialization errors
+    import re
+    # Remove lone surrogates
+    cleaned = re.sub(r'[\ud800-\udfff]', '', text)
+
+    # Encode to UTF-8 and decode back, replacing errors
+    try:
+        cleaned = cleaned.encode('utf-8', errors='replace').decode('utf-8')
+    except UnicodeError:
+        # If still failing, strip all non-ASCII high characters
+        cleaned = ''.join(c for c in text if ord(c) < 0x10000 or (ord(c) >= 0x10000 and ord(c) <= 0x10FFFF))
+
+    return cleaned
+
+
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """
     Stream chat response using Server-Sent Events.
-    
+
     Great for real-time chat UI showing response as it generates.
     """
+    # Sanitize the message to prevent Unicode encoding errors
+    sanitized_message = sanitize_unicode(request.message)
+
+    print(f"\n{'='*60}")
+    print(f"🚀 /chat/stream CALLED")
+    print(f"📝 Message: {sanitized_message[:100]}...")
+    print(f"👤 User ID: {request.user_id}")
+    print(f"🔑 Session ID: {request.session_id}")
+    print(f"{'='*60}")
+
     session_id = request.session_id or str(uuid.uuid4())
-    
+    print(f"📌 Using session_id: {session_id}")
+
     session = await session_service.get_session(
         app_name="content_studio",
         user_id=request.user_id,
         session_id=session_id
     )
-    
+    print(f"📋 Session exists: {session is not None}")
+
     if not session:
+        print(f"🆕 Creating new session...")
         session = await session_service.create_session(
             app_name="content_studio",
             user_id=request.user_id,
             session_id=session_id
         )
+        print(f"✅ Session created")
     
     # Build message with explicit paths for the agent
-    message_text = request.message
+    message_text = sanitized_message
     
     # Add last generated image context for editing operations
     if request.last_generated_image:
@@ -621,21 +662,38 @@ async def chat_stream(request: ChatRequest):
     
     async def generate():
         # Send session ID first
+        print(f"🎬 Starting SSE stream generation...")
         yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
-        
+
         try:
+            print(f"🤖 Calling runner.run_async...")
+            event_count = 0
             async for event in runner.run_async(
                 user_id=request.user_id,
                 session_id=session_id,
                 new_message=user_message
             ):
+                event_count += 1
+                print(f"📨 Event #{event_count}: {type(event).__name__}")
+                print(f"   - is_final_response: {event.is_final_response() if hasattr(event, 'is_final_response') else 'N/A'}")
+                print(f"   - has content: {event.content is not None}")
+
                 if event.content and event.content.parts:
-                    for part in event.content.parts:
+                    print(f"   - parts count: {len(event.content.parts)}")
+                    for i, part in enumerate(event.content.parts):
                         if hasattr(part, 'text') and part.text:
+                            text_preview = part.text[:100].replace('\n', '\\n')
+                            print(f"   - Part {i} text: {text_preview}...")
                             yield f"data: {json.dumps({'type': 'text', 'content': part.text})}\n\n"
+
+            print(f"✅ Stream completed. Total events: {event_count}")
         except Exception as e:
+            print(f"❌ ERROR in stream: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             yield f"data: {json.dumps({'type': 'error', 'message': 'An error occurred. Please try again.'})}\n\n"
-        
+
+        print(f"🏁 Sending 'done' event")
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
     
     return StreamingResponse(

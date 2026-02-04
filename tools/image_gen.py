@@ -733,94 +733,236 @@ def animate_image(
     image_path: str,
     motion_prompt: str,
     duration_seconds: int = 5,
-    output_dir: str = "generated"
+    output_dir: str = "generated",
+    aspect_ratio: str = "9:16",
+    with_audio: bool = True,
+    negative_prompt: str = ""
 ) -> dict:
     """
-    Animate a static image to create a short video/cinemagraph.
-    
-    NOTE: Video generation model availability varies by region/account.
-    Falls back to helpful guidance if unavailable.
-    
+    Animate a static image to create a short video using Veo 3.1.
+
+    Uses Google's Veo 3.1 model for high-quality image-to-video generation
+    with optional audio generation.
+
     Args:
-        image_path: Path to the static image to animate
-        motion_prompt: Description of desired motion
-        duration_seconds: Length of video (3-8 seconds recommended)
+        image_path: Path to the static image to animate (can be web URL like /generated/file.png or full filesystem path)
+        motion_prompt: Description of desired motion and scene
+        duration_seconds: Length of video (5-8 seconds recommended)
         output_dir: Directory to save the generated video
-        
+        aspect_ratio: Video aspect ratio ("16:9", "9:16" for vertical)
+        with_audio: Generate audio with the video (Veo 3.1 feature)
+        negative_prompt: What to avoid in the video
+
     Returns:
-        Dictionary with video path or guidance for alternatives
+        Dictionary with video path or error information
     """
-    print(f"🎬 Animating image: {image_path}")
+    print(f"🎬 Animating image with Veo 3.1: {image_path}")
     print(f"   Motion: {motion_prompt[:50]}...")
-    
+    print(f"   Duration: {duration_seconds}s, Aspect: {aspect_ratio}, Audio: {with_audio}")
+
     try:
         client = _get_client()
-        
-        if not os.path.exists(image_path):
+
+        # Convert web URL path to filesystem path if needed
+        # Web URLs like "/generated/post_xxx.png" need to be converted to full paths
+        resolved_path = image_path
+        if image_path.startswith("/generated/"):
+            # Get the project root directory
+            project_root = Path(__file__).parent.parent
+            resolved_path = str(project_root / image_path.lstrip("/"))
+            print(f"   📁 Resolved path: {resolved_path}")
+        elif not os.path.isabs(image_path):
+            # Relative path - try to resolve from project root
+            project_root = Path(__file__).parent.parent
+            resolved_path = str(project_root / image_path)
+            print(f"   📁 Resolved relative path: {resolved_path}")
+
+        if not os.path.exists(resolved_path):
             return {
                 "status": "error",
-                "message": f"Image not found: {image_path}"
+                "message": f"Image not found: {image_path} (resolved: {resolved_path})"
             }
-        
-        animation_prompt = f"""Create a short, looping video animation from this image.
 
-MOTION: {motion_prompt}
+        # Build the animation prompt for social media content
+        full_prompt = f"""Create a smooth, professional video animation from this image.
+
+MOTION DESCRIPTION: {motion_prompt}
 
 GUIDELINES:
 - Duration: {duration_seconds} seconds
-- Smooth, seamless loop
-- Keep brand elements (logo, text) stable
-- Subtle, professional motion
-- Perfect for Instagram Reels/Stories"""
+- Smooth, cinematic motion
+- Keep brand elements (logo, text) stable and readable
+- Professional quality suitable for Instagram Reels/Stories
+- Subtle ambient sound if audio enabled
+"""
+        if negative_prompt:
+            full_prompt += f"\nAVOID: {negative_prompt}"
 
-        video_model = os.getenv("VIDEO_MODEL", "veo-2.0-generate-001")
-        source_image = Image.open(image_path)
-        
-        def make_request():
-            return client.models.generate_content(
-                model=video_model,
-                contents=[animation_prompt, source_image],
-                config=types.GenerateContentConfig(
-                    response_modalities=["video"],
-                )
-            )
-        
+        # Use Veo 3.1 model (matching the reference code pattern)
+        video_model = "veo-3.1-generate-preview"
+        print(f"   Model: {video_model}")
+
+        # Load source image and convert to the format expected by the API
+        source_image = Image.open(resolved_path)
+
+        # Convert to RGB if needed (for PNG with alpha)
+        if source_image.mode in ('RGBA', 'LA', 'P'):
+            source_image = source_image.convert('RGB')
+
         try:
-            response = _retry_with_backoff(make_request, max_retries=2)
-            
+            # Use the generate_videos API following the reference pattern
+            print("   📤 Starting video generation with Veo 3.1...")
+
+            # Upload image first using the types.Image with raw_reference_image
+            # Following the reference: image=image.parts[0].as_image()
+            # We need to create an image object that the API accepts
+            import io
+            img_byte_arr = io.BytesIO()
+            source_image.save(img_byte_arr, format='PNG')
+            img_bytes = img_byte_arr.getvalue()
+
+            # Create the video generation request using the pattern from reference
+            operation = client.models.generate_videos(
+                model=video_model,
+                prompt=full_prompt,
+                image=types.RawReferenceImage(
+                    reference_image=types.Image(
+                        image_bytes=img_bytes,
+                        mime_type="image/png"
+                    ),
+                    reference_id="source_image"
+                ),
+            )
+
+            # Poll for completion with timeout (matching reference pattern)
+            max_wait_time = 300  # 5 minutes max
+            poll_interval = 10  # Check every 10 seconds
+            elapsed_time = 0
+
+            print("   ⏳ Waiting for video generation...")
+            while not operation.done and elapsed_time < max_wait_time:
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+                operation = client.operations.get(operation)
+                print(f"   ⏳ Processing... ({elapsed_time}s elapsed)")
+
+            if not operation.done:
+                return {
+                    "status": "timeout",
+                    "message": "Video generation is taking longer than expected. Please try again later.",
+                    "source_image": image_path,
+                    "motion_prompt": motion_prompt
+                }
+
+            # Check for errors in the operation
+            if hasattr(operation, 'error') and operation.error:
+                return {
+                    "status": "error",
+                    "message": f"Video generation failed: {operation.error.message if hasattr(operation.error, 'message') else str(operation.error)}",
+                    "source_image": image_path,
+                    "motion_prompt": motion_prompt
+                }
+
+            # Extract the generated video (following reference pattern)
             output_path = Path(output_dir)
             output_path.mkdir(parents=True, exist_ok=True)
-            
-            for part in response.candidates[0].content.parts:
-                if part.inline_data is not None and "video" in part.inline_data.mime_type:
+
+            # Get the video from response.generated_videos[0] as in reference
+            if hasattr(operation, 'response') and hasattr(operation.response, 'generated_videos'):
+                generated_videos = operation.response.generated_videos
+
+                if generated_videos and len(generated_videos) > 0:
+                    video = generated_videos[0]
                     video_id = str(uuid.uuid4())[:8]
                     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                     filename = f"animated_{timestamp}_{video_id}.mp4"
                     video_path = output_path / filename
-                    
-                    with open(video_path, "wb") as f:
-                        f.write(part.inline_data.data)
-                    
-                    print(f"   ✅ Video saved: {video_path}")
-                    
-                    return {
-                        "status": "success",
-                        "video_path": str(video_path),
-                        "filename": filename,
-                        "url": f"/generated/{filename}",
-                        "motion_prompt": motion_prompt,
-                        "duration_seconds": duration_seconds,
-                        "source_image": image_path,
-                        "type": "video"
-                    }
-        
+
+                    # Try to download and save using the reference pattern
+                    # Reference: client.files.download(file=video.video) then video.video.save()
+                    try:
+                        if hasattr(video, 'video'):
+                            # Download the video file
+                            client.files.download(file=video.video)
+                            # Save to local file
+                            video.video.save(str(video_path))
+                            print(f"   ✅ Video saved: {video_path}")
+
+                            return {
+                                "status": "success",
+                                "video_path": str(video_path),
+                                "filename": filename,
+                                "url": f"/generated/{filename}",
+                                "motion_prompt": motion_prompt,
+                                "duration_seconds": duration_seconds,
+                                "source_image": image_path,
+                                "aspect_ratio": aspect_ratio,
+                                "with_audio": with_audio,
+                                "model": video_model,
+                                "type": "video"
+                            }
+                    except Exception as save_error:
+                        print(f"   ⚠️ Error saving video: {save_error}")
+                        # Try alternative methods to get video data
+                        video_obj = video.video if hasattr(video, 'video') else video
+
+                        # Try getting video bytes directly
+                        video_data = None
+                        for attr in ['video_bytes', 'videoBytes', 'data', '_data']:
+                            if hasattr(video_obj, attr):
+                                video_data = getattr(video_obj, attr)
+                                if video_data:
+                                    break
+
+                        if video_data:
+                            with open(video_path, "wb") as f:
+                                f.write(video_data)
+                            print(f"   ✅ Video saved (fallback): {video_path}")
+
+                            return {
+                                "status": "success",
+                                "video_path": str(video_path),
+                                "filename": filename,
+                                "url": f"/generated/{filename}",
+                                "motion_prompt": motion_prompt,
+                                "duration_seconds": duration_seconds,
+                                "source_image": image_path,
+                                "aspect_ratio": aspect_ratio,
+                                "with_audio": with_audio,
+                                "model": video_model,
+                                "type": "video"
+                            }
+
+                        # If we have a URI, return that
+                        if hasattr(video_obj, 'uri') and video_obj.uri:
+                            return {
+                                "status": "success",
+                                "video_uri": video_obj.uri,
+                                "motion_prompt": motion_prompt,
+                                "duration_seconds": duration_seconds,
+                                "source_image": image_path,
+                                "aspect_ratio": aspect_ratio,
+                                "with_audio": with_audio,
+                                "model": video_model,
+                                "type": "video"
+                            }
+
+            return {
+                "status": "error",
+                "message": "Video generation completed but no video was returned.",
+                "source_image": image_path,
+                "motion_prompt": motion_prompt
+            }
+
         except Exception as model_error:
             error_str = str(model_error).lower()
-            if "not found" in error_str or "invalid" in error_str or "unavailable" in error_str:
+            print(f"   ⚠️ Video generation error: {error_str}")
+
+            if "not found" in error_str or "invalid" in error_str or "unavailable" in error_str or "not supported" in error_str or "permission" in error_str:
                 # Model not available - provide helpful alternatives
                 return {
                     "status": "model_unavailable",
-                    "message": "Video generation is not available in your region/account.",
+                    "message": "Veo 3.1 video generation is not available in your region/account. You may need to enable the Veo API in Google Cloud Console.",
                     "source_image": image_path,
                     "motion_prompt": motion_prompt,
                     "alternatives": [
@@ -836,13 +978,181 @@ GUIDELINES:
                     }
                 }
             raise
-        
-        return {
-            "status": "partial",
-            "message": "Animation processing. The result will be available shortly.",
-            "source_image": image_path,
-            "motion_prompt": motion_prompt
-        }
-            
+
+    except Exception as e:
+        return _format_error(e, "Video generation may not be available in your region.")
+
+
+def generate_video_from_text(
+    prompt: str,
+    duration_seconds: int = 5,
+    aspect_ratio: str = "16:9",
+    output_dir: str = "generated",
+    with_audio: bool = True,
+    negative_prompt: str = ""
+) -> dict:
+    """
+    Generate a video directly from text prompt using Veo 3.1.
+
+    Creates a new video from scratch based on the text description.
+
+    Args:
+        prompt: Detailed description of the video to generate
+        duration_seconds: Length of video (5-8 seconds)
+        aspect_ratio: Video aspect ratio ("16:9", "9:16")
+        output_dir: Directory to save the generated video
+        with_audio: Generate audio with the video
+        negative_prompt: What to avoid in the video
+
+    Returns:
+        Dictionary with video path or error information
+    """
+    print(f"🎬 Generating video from text with Veo 3.1")
+    print(f"   Prompt: {prompt[:50]}...")
+    print(f"   Duration: {duration_seconds}s, Aspect: {aspect_ratio}, Audio: {with_audio}")
+
+    try:
+        client = _get_client()
+
+        # Use Veo 3.1 model (matching the reference code pattern)
+        video_model = "veo-3.1-generate-preview"
+        print(f"   Model: {video_model}")
+
+        try:
+            # Use the generate_videos API for text-to-video
+            print("   📤 Starting video generation with Veo 3.1...")
+
+            operation = client.models.generate_videos(
+                model=video_model,
+                prompt=prompt,
+            )
+
+            # Poll for completion (matching reference pattern)
+            max_wait_time = 300  # 5 minutes max
+            poll_interval = 10
+            elapsed_time = 0
+
+            print("   ⏳ Waiting for video generation...")
+            while not operation.done and elapsed_time < max_wait_time:
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+                operation = client.operations.get(operation)
+                print(f"   ⏳ Processing... ({elapsed_time}s elapsed)")
+
+            if not operation.done:
+                return {
+                    "status": "timeout",
+                    "message": "Video generation is taking longer than expected.",
+                    "prompt": prompt
+                }
+
+            if hasattr(operation, 'error') and operation.error:
+                return {
+                    "status": "error",
+                    "message": f"Video generation failed: {operation.error.message if hasattr(operation.error, 'message') else str(operation.error)}",
+                    "prompt": prompt
+                }
+
+            # Extract the generated video (following reference pattern)
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+
+            # Get the video from response.generated_videos[0] as in reference
+            if hasattr(operation, 'response') and hasattr(operation.response, 'generated_videos'):
+                generated_videos = operation.response.generated_videos
+
+                if generated_videos and len(generated_videos) > 0:
+                    video = generated_videos[0]
+                    video_id = str(uuid.uuid4())[:8]
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    filename = f"video_{timestamp}_{video_id}.mp4"
+                    video_path = output_path / filename
+
+                    # Try to download and save using the reference pattern
+                    try:
+                        if hasattr(video, 'video'):
+                            # Download the video file
+                            client.files.download(file=video.video)
+                            # Save to local file
+                            video.video.save(str(video_path))
+                            print(f"   ✅ Video saved: {video_path}")
+
+                            return {
+                                "status": "success",
+                                "video_path": str(video_path),
+                                "filename": filename,
+                                "url": f"/generated/{filename}",
+                                "prompt": prompt,
+                                "duration_seconds": duration_seconds,
+                                "aspect_ratio": aspect_ratio,
+                                "with_audio": with_audio,
+                                "model": video_model,
+                                "type": "video"
+                            }
+                    except Exception as save_error:
+                        print(f"   ⚠️ Error saving video: {save_error}")
+                        # Try alternative methods
+                        video_obj = video.video if hasattr(video, 'video') else video
+
+                        video_data = None
+                        for attr in ['video_bytes', 'videoBytes', 'data', '_data']:
+                            if hasattr(video_obj, attr):
+                                video_data = getattr(video_obj, attr)
+                                if video_data:
+                                    break
+
+                        if video_data:
+                            with open(video_path, "wb") as f:
+                                f.write(video_data)
+                            print(f"   ✅ Video saved (fallback): {video_path}")
+
+                            return {
+                                "status": "success",
+                                "video_path": str(video_path),
+                                "filename": filename,
+                                "url": f"/generated/{filename}",
+                                "prompt": prompt,
+                                "duration_seconds": duration_seconds,
+                                "aspect_ratio": aspect_ratio,
+                                "with_audio": with_audio,
+                                "model": video_model,
+                                "type": "video"
+                            }
+
+                        if hasattr(video_obj, 'uri') and video_obj.uri:
+                            return {
+                                "status": "success",
+                                "video_uri": video_obj.uri,
+                                "prompt": prompt,
+                                "duration_seconds": duration_seconds,
+                                "aspect_ratio": aspect_ratio,
+                                "with_audio": with_audio,
+                                "model": video_model,
+                                "type": "video"
+                            }
+
+            return {
+                "status": "error",
+                "message": "Video generation completed but no video was returned.",
+                "prompt": prompt
+            }
+
+        except Exception as model_error:
+            error_str = str(model_error).lower()
+            print(f"   ⚠️ Video generation error: {error_str}")
+
+            if "not found" in error_str or "invalid" in error_str or "unavailable" in error_str:
+                return {
+                    "status": "model_unavailable",
+                    "message": "Veo 3.1 video generation is not available in your region/account.",
+                    "prompt": prompt,
+                    "alternatives": [
+                        "Runway ML (runwayml.com) - Text to Video",
+                        "Pika Labs (pika.art) - Video generation",
+                        "Kaiber AI - AI video creation"
+                    ]
+                }
+            raise
+
     except Exception as e:
         return _format_error(e, "Video generation may not be available in your region.")

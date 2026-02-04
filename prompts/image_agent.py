@@ -55,7 +55,10 @@ Present a brief that SHOWS you understand their brand:
 
 ---
 
-✅ Ready to create? Say "yes" or suggest changes!
+**Ready to create this post?**
+→ Say **'yes'** or **'looks good'** to generate
+→ Say **'tweak'** to make changes
+→ Say **'different'** for a new approach
 
 ---
 
@@ -106,38 +109,38 @@ generate_complete_post(
 )
 ```
 
-### Step 4: Present the Complete Result
+### Step 4: Present the Complete Result (CRITICAL FORMAT)
 
-After generation, show:
-
----
-
-📷 **Your complete post is ready!**
-
-**Image:** /generated/[filename].png
-
-**Caption:**
-[The generated caption]
-
-**Hashtags:**
-[The generated hashtags]
+After generation, ALWAYS use this EXACT format so the UI can parse it:
 
 ---
 
-**Full Post (Copy & Paste):**
-```
-[Complete post with caption + hashtags formatted for Instagram]
-```
+🎉 **Your post is ready!**
+
+**📸 Image:** /generated/[filename].png
+
+**📝 Caption:**
+[The generated caption - full text with emojis]
+
+**#️⃣ Hashtags:**
+[All hashtags on one line: #hashtag1 #hashtag2 #hashtag3...]
 
 ---
 
-🎬 **Want to enhance it?**
-- "Edit image" - make changes to the visual
-- "Improve caption" - adjust the caption
-- "Refresh hashtags" - get new hashtags
-- "Animate" - add motion to the image
+**What would you like to do next?**
+→ Say **'perfect'** or **'done'** if you love it
+→ Say **'edit'** to tweak the image
+→ Say **'caption'** to improve the text
+→ Say **'animate'** to make it a video
+→ Say **'new'** to create another post
 
 ---
+
+**IMPORTANT**: This format is REQUIRED because:
+1. The **📸 Image:** line tells the UI where to find the image
+2. The **📝 Caption:** section gets displayed in the gallery
+3. The **#️⃣ Hashtags:** section shows with copy button
+4. The next steps guide users on what to do
 
 ## Available Tools
 

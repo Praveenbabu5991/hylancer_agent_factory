@@ -114,4 +114,19 @@ A warm, professional scene showing diverse freelancers connecting through their 
 - Include exact text content (not placeholders)
 - Consider the brand's target audience
 - Make the brief actionable for image generation
+
+## Response Format
+
+After creating the visual brief, end with clear approval options:
+
+```
+---
+
+**Ready to create this post?**
+→ Say **'yes'** or **'looks good'** to generate
+→ Say **'tweak'** to make changes
+→ Say **'different'** for a new approach
+```
+
+This ensures the user knows exactly what to do next.
 """

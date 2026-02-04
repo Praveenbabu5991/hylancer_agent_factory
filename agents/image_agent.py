@@ -5,6 +5,8 @@ This agent combines image generation with caption and hashtag creation for a str
 one-stop post creation experience.
 """
 
+print("📦 Loading image_agent.py...")
+
 from google.adk.agents import LlmAgent
 from config.models import get_image_model
 from prompts.image_agent import IMAGE_AGENT_PROMPT
@@ -13,6 +15,7 @@ from tools.content import write_caption, generate_hashtags
 from tools.instagram import scrape_instagram_profile
 from memory.store import save_to_memory, recall_from_memory
 
+print(f"🖼️ Creating ImagePostAgent with model: {get_image_model()}")
 
 image_post_agent = LlmAgent(
     name="ImagePostAgent",
