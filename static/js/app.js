@@ -3059,18 +3059,18 @@ class ContentStudioApp {
             imagePath = linkMatch[2];
         }
 
-        // Ensure it starts with /generated/ and ends with .png or image extension
+        // Ensure it starts with /generated/ and ends with valid media extension
         if (imagePath.includes('/generated/')) {
-            // Extract just the /generated/xxx.png part
-            const genMatch = imagePath.match(/(\/generated\/[a-zA-Z0-9_-]+\.(?:png|jpg|jpeg|gif|webp))/i);
+            // Extract just the /generated/xxx.ext part (images and videos)
+            const genMatch = imagePath.match(/(\/generated\/[a-zA-Z0-9_-]+\.(?:png|jpg|jpeg|gif|webp|mp4|webm|mov))/i);
             if (genMatch) {
                 imagePath = genMatch[1];
             }
         }
 
-        // Final validation
-        if (!imagePath.startsWith('/generated/') || !imagePath.match(/\.(png|jpg|jpeg|gif|webp)$/i)) {
-            console.warn('Invalid image path after sanitization:', imagePath);
+        // Final validation - accept both image and video formats
+        if (!imagePath.startsWith('/generated/') || !imagePath.match(/\.(png|jpg|jpeg|gif|webp|mp4|webm|mov)$/i)) {
+            console.warn('Invalid media path after sanitization:', imagePath);
             return null;
         }
 
