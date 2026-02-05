@@ -186,6 +186,7 @@ class ContentStudioApp {
         this.galleryActions = document.getElementById('galleryActions');
         this.refreshBtn = document.getElementById('refreshBtn');
         this.downloadAllBtn = document.getElementById('downloadAllBtn');
+        this.newSessionBtn = document.getElementById('newSessionBtn');
         this.galleryTabs = document.querySelectorAll('.gallery-tab');
         
         // Caption display
@@ -305,6 +306,11 @@ class ContentStudioApp {
         // Brand form
         this.brandForm.addEventListener('submit', (e) => this.handleBrandSubmit(e));
         
+        // New Session
+        this.newSessionBtn?.addEventListener('click', () => {
+            this.clearSession();
+        });
+
         // Gallery
         this.refreshBtn?.addEventListener('click', () => this.refreshGallery());
         this.downloadAllBtn?.addEventListener('click', () => this.downloadAll());

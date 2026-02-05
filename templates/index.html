@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/style.css?v=20260205c">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260205e">
 </head>
 <body>
     <div class="app-container">
@@ -27,9 +27,17 @@
                         <span class="tagline">AI-Powered Content</span>
                     </div>
                 </div>
-                <div class="status-badge">
-                    <span class="pulse"></span>
-                    <span>Gemini Powered</span>
+                <div class="header-actions">
+                    <div class="status-badge">
+                        <span class="pulse"></span>
+                        <span>Gemini Powered</span>
+                    </div>
+                    <button class="new-session-btn" id="newSessionBtn" title="Start new session">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="12" y1="5" x2="12" y2="19"/>
+                            <line x1="5" y1="12" x2="19" y2="12"/>
+                        </svg>
+                    </button>
                 </div>
             </div>
 
@@ -591,6 +599,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20260205d"></script>
+    <script src="/static/js/app.js?v=20260205e"></script>
 </body>
 </html>
