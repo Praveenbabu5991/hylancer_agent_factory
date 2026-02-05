@@ -431,9 +431,15 @@ class ContentStudioApp {
                     images.forEach(imgUrl => {
                         if (!this.generatedImages.includes(imgUrl)) {
                             this.generatedImages.push(imgUrl);
-                            // Restore with metadata if available
                             const meta = this.generatedImagesMeta[imgUrl];
-                            if (meta && (meta.caption || (meta.hashtags && meta.hashtags.length > 0))) {
+                            const isVideo = /\.(mp4|webm|mov)$/i.test(imgUrl);
+
+                            if (isVideo) {
+                                // Restore video cards with caption/hashtags
+                                const caption = meta ? (meta.caption || '') : '';
+                                const hashtags = meta ? (meta.hashtags || []) : [];
+                                this.addVideoToGalleryWithCaption(imgUrl, caption, hashtags);
+                            } else if (meta && (meta.caption || (meta.hashtags && meta.hashtags.length > 0))) {
                                 this.addImageToGalleryWithCaption(imgUrl, meta.caption || '', meta.hashtags || []);
                             } else {
                                 this.addImageToGallery(imgUrl);
@@ -2297,25 +2303,31 @@ class ContentStudioApp {
                     console.log('➕ Adding image to gallery:', imgPath);
                     this.generatedImages.push(imgPath);
 
-                    // Try to extract caption and hashtags near this image
-                    const imgIndex = text.indexOf(imgPath);
-                    if (imgIndex !== -1) {
-                        const textAfterImage = text.slice(imgIndex, imgIndex + 2000);
+                    // Try to extract caption and hashtags from response text
+                    // Search in full text since caption may appear before or after the image path
+                    let caption = '';
+                    let hashtags = [];
 
-                        // Look for caption after the image
-                        const captionMatch = textAfterImage.match(/(?:\*\*)?(?:📝\s*)?Caption(?:\*\*)?:?\s*\n?([\s\S]*?)(?=\*\*(?:#️⃣|Hashtags)|#️⃣\s*(?:\*\*)?Hashtags|---|\n\n\*\*What|\n\n---|\n\nOptions:|$)/i);
-                        let caption = captionMatch ? captionMatch[1].trim().replace(/\*\*/g, '').substring(0, 800) : '';
-
-                        // Look for hashtags
-                        const hashtagMatch = textAfterImage.match(/#[a-zA-Z][a-zA-Z0-9_]*/g);
-                        const hashtags = hashtagMatch ? hashtagMatch.slice(0, 25) : [];
-
-                        if (caption || hashtags.length > 0) {
-                            console.log('📝 Found caption/hashtags for fallback image');
-                            this.addImageToGalleryWithCaption(imgPath, caption, hashtags);
-                        } else {
-                            this.addImageToGallery(imgPath);
+                    // Look for caption section anywhere in the response
+                    const captionPatterns = [
+                        /(?:\*\*)?(?:📝\s*)?Caption(?:\*\*)?:?\s*\n?([\s\S]*?)(?=#️⃣|Hashtags:|---|\n\n\*\*What|\n\nOptions:|$)/i,
+                        /(?:📝\s*)?Caption:?\s*\n([\s\S]*?)(?=\n\n#️⃣|\n\n.*Hashtags|\n---|\n\n\*\*What|\n\nOptions:|$)/i,
+                    ];
+                    for (const cp of captionPatterns) {
+                        const cm = text.match(cp);
+                        if (cm && cm[1].trim().length > 10) {
+                            caption = cm[1].trim().replace(/\*\*/g, '').substring(0, 800);
+                            break;
                         }
+                    }
+
+                    // Look for hashtags anywhere in the response
+                    const hashtagMatch = text.match(/#[a-zA-Z][a-zA-Z0-9_]*/g);
+                    hashtags = hashtagMatch ? hashtagMatch.slice(0, 25) : [];
+
+                    if (caption || hashtags.length > 0) {
+                        console.log('📝 Found caption/hashtags for fallback image');
+                        this.addImageToGalleryWithCaption(imgPath, caption, hashtags);
                     } else {
                         this.addImageToGallery(imgPath);
                     }
@@ -2327,13 +2339,31 @@ class ContentStudioApp {
         // Check for generated videos (animated content)
         const videoPattern = /(?:\/)?generated\/[^\s\)\"\'\`<>]+\.(mp4|webm|mov)/gi;
         const videoMatches = text.match(videoPattern);
-        
+
         if (videoMatches) {
             const videos = videoMatches.map(path => path.startsWith('/') ? path : '/' + path);
             videos.forEach(videoPath => {
                 if (!this.generatedImages.includes(videoPath)) {
                     this.generatedImages.push(videoPath);
-                    this.addImageToGallery(videoPath);
+
+                    // Try to get caption/hashtags from the most recent image post
+                    // (the video is an animation of a previously generated image)
+                    let videoCaption = '';
+                    let videoHashtags = [];
+
+                    // Check if we have metadata from a recent image
+                    const lastImage = this.generatedImages.filter(p => /\.(png|jpg|jpeg)$/i.test(p)).pop();
+                    if (lastImage && this.generatedImagesMeta && this.generatedImagesMeta[lastImage]) {
+                        const meta = this.generatedImagesMeta[lastImage];
+                        videoCaption = meta.caption || '';
+                        videoHashtags = meta.hashtags || [];
+                    }
+
+                    if (videoCaption || videoHashtags.length > 0) {
+                        this.addVideoToGalleryWithCaption(videoPath, videoCaption, videoHashtags);
+                    } else {
+                        this.addImageToGallery(videoPath);
+                    }
                     this.saveImagesToStorage();
                 }
             });
@@ -2884,11 +2914,6 @@ class ContentStudioApp {
                     </div>
                     <div class="card-overlay">
                         <div class="overlay-actions">
-                            <button class="overlay-btn play-btn" title="Play/Pause">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <polygon points="5 3 19 12 5 21 5 3"/>
-                                </svg>
-                            </button>
                             <button class="overlay-btn download-btn" title="Download">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
@@ -2899,6 +2924,29 @@ class ContentStudioApp {
                         </div>
                     </div>
                 </div>
+                <div class="video-controls">
+                    <button class="video-play-btn" title="Play/Pause">
+                        <svg class="play-icon" viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                            <polygon points="5 3 19 12 5 21 5 3"/>
+                        </svg>
+                        <svg class="pause-icon" viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style="display:none">
+                            <rect x="6" y="4" width="4" height="16"/>
+                            <rect x="14" y="4" width="4" height="16"/>
+                        </svg>
+                        <span class="video-play-label">Play</span>
+                    </button>
+                    <button class="video-sound-btn" title="Unmute">
+                        <svg class="muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                            <line x1="23" y1="9" x2="17" y2="15"/>
+                            <line x1="17" y1="9" x2="23" y2="15"/>
+                        </svg>
+                        <svg class="unmuted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="display:none">
+                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                        </svg>
+                    </button>
+                </div>
                 <div class="card-info">
                     <div class="card-meta">
                         <span class="card-badge video-badge-text">🎬 Animated</span>
@@ -2906,46 +2954,47 @@ class ContentStudioApp {
                     </div>
                 </div>
             `;
-            
+
             const video = card.querySelector('video');
-            const playBtn = card.querySelector('.play-btn');
-            
-            // Auto-play on hover
-            card.querySelector('.card-video').addEventListener('mouseenter', () => {
-                video.play().catch(() => {});
-            });
-            card.querySelector('.card-video').addEventListener('mouseleave', () => {
-                video.pause();
-                video.currentTime = 0;
-            });
-            
-            // Play button click
+            const playBtn = card.querySelector('.video-play-btn');
+            const playLabel = card.querySelector('.video-play-label');
+            const playIcon = card.querySelector('.play-icon');
+            const pauseIcon = card.querySelector('.pause-icon');
+            const soundBtn = card.querySelector('.video-sound-btn');
+            const mutedIcon = card.querySelector('.muted-icon');
+            const unmutedIcon = card.querySelector('.unmuted-icon');
+
+            // Play/Pause button
             playBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 if (video.paused) {
                     video.play();
-                    playBtn.innerHTML = `
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <rect x="6" y="4" width="4" height="16"/>
-                            <rect x="14" y="4" width="4" height="16"/>
-                        </svg>
-                    `;
+                    playIcon.style.display = 'none';
+                    pauseIcon.style.display = 'inline';
+                    playLabel.textContent = 'Pause';
                 } else {
                     video.pause();
-                    playBtn.innerHTML = `
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polygon points="5 3 19 12 5 21 5 3"/>
-                        </svg>
-                    `;
+                    playIcon.style.display = 'inline';
+                    pauseIcon.style.display = 'none';
+                    playLabel.textContent = 'Play';
                 }
             });
-            
+
+            // Sound toggle button
+            soundBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                video.muted = !video.muted;
+                mutedIcon.style.display = video.muted ? 'inline' : 'none';
+                unmutedIcon.style.display = video.muted ? 'none' : 'inline';
+                soundBtn.title = video.muted ? 'Unmute' : 'Mute';
+            });
+
             card.querySelector('.download-btn').addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.downloadImage(imagePath, filename);
             });
-            
-            // Click to open in modal
+
+            // Click video area to open in modal
             card.querySelector('.card-video').addEventListener('click', () => this.openVideoModal(imagePath));
             
         } else {
@@ -2993,30 +3042,273 @@ class ContentStudioApp {
         
         this.contentGrid.insertBefore(card, this.contentGrid.firstChild);
     }
-    
-    // Open video in modal
-    openVideoModal(videoPath) {
-        const modal = document.getElementById('imageModal');
-        const modalContent = modal.querySelector('.modal-content');
-        
-        // Replace image with video in modal
-        modalContent.innerHTML = `
-            <span class="close-modal">&times;</span>
-            <video src="${videoPath}" controls autoplay loop class="modal-video">
-                Your browser does not support the video tag.
-            </video>
+
+    // Add video to gallery WITH associated caption/hashtags from the original image post
+    addVideoToGalleryWithCaption(videoPath, caption, hashtags) {
+        videoPath = this.sanitizeImagePath(videoPath);
+        if (!videoPath) return;
+
+        // Save metadata for this video
+        if (!this.generatedImagesMeta) this.generatedImagesMeta = {};
+        this.generatedImagesMeta[videoPath] = {
+            caption: caption || '',
+            hashtags: hashtags || []
+        };
+
+        this.emptyState.hidden = true;
+        this.contentGrid.hidden = false;
+        this.galleryActions.hidden = false;
+
+        const card = document.createElement('div');
+        card.className = 'content-card video-card';
+        const filename = videoPath.split('/').pop();
+        const timestamp = new Date().toLocaleTimeString();
+        const captionPreview = caption ? caption.substring(0, 150) + (caption.length > 150 ? '...' : '') : '';
+        const hashtagsStr = hashtags && hashtags.length > 0 ? hashtags.join(' ') : '';
+
+        card.innerHTML = `
+            <div class="card-video" data-video="${videoPath}">
+                <video src="${videoPath}" loop muted playsinline>
+                    Your browser does not support the video tag.
+                </video>
+                <div class="video-badge">
+                    <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12">
+                        <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                    Video
+                </div>
+                <div class="card-overlay">
+                    <div class="overlay-actions">
+                        <button class="overlay-btn download-btn" title="Download">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                                <polyline points="7 10 12 15 17 10"/>
+                                <line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="video-controls">
+                <button class="video-play-btn" title="Play/Pause">
+                    <svg class="play-icon" viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                        <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                    <svg class="pause-icon" viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style="display:none">
+                        <rect x="6" y="4" width="4" height="16"/>
+                        <rect x="14" y="4" width="4" height="16"/>
+                    </svg>
+                    <span class="video-play-label">Play</span>
+                </button>
+                <button class="video-sound-btn" title="Unmute">
+                    <svg class="muted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                        <line x1="23" y1="9" x2="17" y2="15"/>
+                        <line x1="17" y1="9" x2="23" y2="15"/>
+                    </svg>
+                    <svg class="unmuted-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="display:none">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="card-caption-section ${!caption && !hashtagsStr ? 'hidden' : ''}">
+                ${caption ? `
+                <div class="caption-header">
+                    <span class="caption-label">📝 Caption</span>
+                    <button class="copy-btn copy-caption-btn" title="Copy caption">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
+                        </svg>
+                        Copy
+                    </button>
+                </div>
+                <div class="card-caption-text">${captionPreview}</div>
+                ${caption.length > 150 ? `
+                <button class="expand-caption-btn" data-expanded="false">
+                    View Full Caption ▼
+                </button>
+                <div class="card-caption-full">${caption.replace(/\n/g, '<br>')}</div>
+                ` : ''}
+                ` : ''}
+                ${hashtagsStr ? `
+                <div class="hashtags-section">
+                    <div class="hashtags-header">
+                        <span class="hashtags-label">#️⃣ Hashtags</span>
+                        <button class="copy-btn copy-hashtags-btn" title="Copy hashtags">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path>
+                            </svg>
+                            Copy
+                        </button>
+                    </div>
+                    <div class="card-hashtags-text">${hashtagsStr}</div>
+                </div>
+                ` : ''}
+                ${caption && hashtagsStr ? `
+                <div class="copy-all-section">
+                    <button class="copy-btn copy-all-btn" title="Copy caption + hashtags">
+                        📋 Copy Full Post
+                    </button>
+                </div>
+                ` : ''}
+            </div>
+            <div class="card-info">
+                <div class="card-meta">
+                    <span class="card-badge video-badge-text">🎬 Animated</span>
+                    <span>${timestamp}</span>
+                </div>
+            </div>
         `;
-        
-        modal.style.display = 'flex';
-        
-        modal.querySelector('.close-modal').addEventListener('click', () => {
-            modal.style.display = 'none';
-            // Restore original modal content
-            modalContent.innerHTML = `
-                <span class="close-modal">&times;</span>
-                <img src="" alt="Full size image" class="modal-image">
-            `;
+
+        // Video controls
+        const video = card.querySelector('video');
+        const playBtn = card.querySelector('.video-play-btn');
+        const playLabel = card.querySelector('.video-play-label');
+        const playIcon = card.querySelector('.play-icon');
+        const pauseIcon = card.querySelector('.pause-icon');
+        const soundBtn = card.querySelector('.video-sound-btn');
+        const mutedIcon = card.querySelector('.muted-icon');
+        const unmutedIcon = card.querySelector('.unmuted-icon');
+
+        playBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (video.paused) {
+                video.play();
+                playIcon.style.display = 'none';
+                pauseIcon.style.display = 'inline';
+                playLabel.textContent = 'Pause';
+            } else {
+                video.pause();
+                playIcon.style.display = 'inline';
+                pauseIcon.style.display = 'none';
+                playLabel.textContent = 'Play';
+            }
         });
+
+        soundBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            video.muted = !video.muted;
+            mutedIcon.style.display = video.muted ? 'inline' : 'none';
+            unmutedIcon.style.display = video.muted ? 'none' : 'inline';
+            soundBtn.title = video.muted ? 'Unmute' : 'Mute';
+        });
+
+        card.querySelector('.download-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.downloadImage(videoPath, filename);
+        });
+
+        card.querySelector('.card-video').addEventListener('click', () => this.openVideoModal(videoPath));
+
+        // Copy button handlers
+        const copyCaptionBtn = card.querySelector('.copy-caption-btn');
+        if (copyCaptionBtn) {
+            copyCaptionBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.copyToClipboard(caption, copyCaptionBtn);
+            });
+        }
+
+        const copyHashtagsBtn = card.querySelector('.copy-hashtags-btn');
+        if (copyHashtagsBtn) {
+            copyHashtagsBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.copyToClipboard(hashtagsStr, copyHashtagsBtn);
+            });
+        }
+
+        const copyAllBtn = card.querySelector('.copy-all-btn');
+        if (copyAllBtn) {
+            copyAllBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.copyToClipboard(caption + '\n\n' + hashtagsStr, copyAllBtn);
+            });
+        }
+
+        // Expand caption handler
+        const expandBtn = card.querySelector('.expand-caption-btn');
+        if (expandBtn) {
+            expandBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const fullCaption = card.querySelector('.card-caption-full');
+                const previewCaption = card.querySelector('.card-caption-text');
+                if (expandBtn.dataset.expanded === 'false') {
+                    fullCaption.style.display = 'block';
+                    previewCaption.style.display = 'none';
+                    expandBtn.textContent = 'Show Less ▲';
+                    expandBtn.dataset.expanded = 'true';
+                } else {
+                    fullCaption.style.display = 'none';
+                    previewCaption.style.display = 'block';
+                    expandBtn.textContent = 'View Full Caption ▼';
+                    expandBtn.dataset.expanded = 'false';
+                }
+            });
+        }
+
+        this.contentGrid.insertBefore(card, this.contentGrid.firstChild);
+    }
+
+    // Open video in modal (full-screen view)
+    openVideoModal(videoPath) {
+        // Hide the image element
+        this.modalImage.style.display = 'none';
+
+        // Hide the download button (we'll add video-specific download)
+        const modalActions = this.modal.querySelector('.modal-actions');
+        if (modalActions) modalActions.style.display = 'none';
+
+        // Create video element and insert it after the image
+        const video = document.createElement('video');
+        video.src = videoPath;
+        video.controls = true;
+        video.autoplay = true;
+        video.loop = true;
+        video.className = 'modal-video';
+        video.id = 'modalVideo';
+        this.modalImage.parentNode.insertBefore(video, this.modalImage.nextSibling);
+
+        // Create video-specific actions (download button)
+        const videoActions = document.createElement('div');
+        videoActions.className = 'modal-actions modal-video-actions';
+        videoActions.innerHTML = `
+            <button class="modal-btn modal-video-download">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                Download Video
+            </button>
+        `;
+        video.parentNode.insertBefore(videoActions, video.nextSibling);
+
+        // Download handler
+        videoActions.querySelector('.modal-video-download').addEventListener('click', () => {
+            const filename = videoPath.split('/').pop();
+            this.downloadImage(videoPath, filename);
+        });
+
+        // Show modal using hidden attribute (consistent with openModal)
+        this.modal.hidden = false;
+        document.body.style.overflow = 'hidden';
+
+        // Store cleanup function for closeModal
+        this._videoModalCleanup = () => {
+            // Remove video element
+            const modalVideo = document.getElementById('modalVideo');
+            if (modalVideo) modalVideo.remove();
+            // Remove video actions
+            const vActions = this.modal.querySelector('.modal-video-actions');
+            if (vActions) vActions.remove();
+            // Restore image and original actions
+            this.modalImage.style.display = '';
+            if (modalActions) modalActions.style.display = '';
+            this._videoModalCleanup = null;
+        };
     }
     
     displayHashtags(hashtags) {
@@ -3112,6 +3404,10 @@ class ContentStudioApp {
     }
     
     closeModal() {
+        // Clean up video modal if it was open
+        if (this._videoModalCleanup) {
+            this._videoModalCleanup();
+        }
         this.modal.hidden = true;
         document.body.style.overflow = '';
     }

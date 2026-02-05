@@ -1458,6 +1458,51 @@ body {
     box-shadow: var(--shadow-md);
 }
 
+/* Video Controls Bar */
+.video-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.3);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.video-play-btn,
+.video-sound-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: var(--radius-full);
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.video-play-btn:hover,
+.video-sound-btn:hover {
+    background: rgba(139, 92, 246, 0.3);
+    border-color: rgba(139, 92, 246, 0.5);
+    color: var(--text-white);
+}
+
+.video-play-btn svg,
+.video-sound-btn svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+}
+
+.video-sound-btn {
+    padding: 6px 8px;
+    margin-left: auto;
+}
+
 /* ============================================
    Modal
    ============================================ */
