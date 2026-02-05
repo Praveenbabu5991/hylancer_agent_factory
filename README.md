@@ -505,8 +505,8 @@ DEFAULT_MODEL=gemini-2.5-flash
 ORCHESTRATOR_MODEL=gemini-2.5-flash
 IDEA_MODEL=gemini-2.5-flash
 WRITER_MODEL=gemini-2.5-flash
-IMAGE_MODEL=gemini-2.0-flash-exp
-EDIT_MODEL=gemini-2.0-flash-exp
+IMAGE_MODEL=gemini-2.0-flash-preview-image-generation
+EDIT_MODEL=gemini-2.0-flash-preview-image-generation
 CAMPAIGN_MODEL=gemini-2.5-flash
 VIDEO_MODEL=veo-2.0-generate-001
 
@@ -538,7 +538,7 @@ def get_orchestrator_model() -> str:
     return os.getenv("ORCHESTRATOR_MODEL", "gemini-2.5-flash")
 
 def get_image_model() -> str:
-    return os.getenv("IMAGE_MODEL", "gemini-2.0-flash-exp")
+    return os.getenv("IMAGE_MODEL", "gemini-2.0-flash-preview-image-generation")
 
 def get_video_model() -> str:
     return os.getenv("VIDEO_MODEL", "veo-2.0-generate-001")

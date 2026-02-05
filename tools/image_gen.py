@@ -351,8 +351,8 @@ SPECIFIC USAGE INSTRUCTIONS:
                 contents[0] = contents[0] + user_img_prompt
 
         # Generate image with retry
-        model = os.getenv("IMAGE_MODEL", "gemini-2.0-flash-exp")
-        
+        model = os.getenv("IMAGE_MODEL", "gemini-3-pro-image-preview")
+
         def make_request():
             return client.models.generate_content(
                 model=model,
@@ -683,8 +683,8 @@ Keep the overall quality and brand feel while making the requested modifications
 Maintain professional, high-quality output suitable for Instagram."""
 
         original_image = Image.open(original_image_path)
-        model = os.getenv("IMAGE_MODEL", "gemini-2.0-flash-exp")
-        
+        model = os.getenv("EDIT_MODEL", os.getenv("IMAGE_MODEL", "gemini-3-pro-image-preview"))
+
         def make_request():
             return client.models.generate_content(
                 model=model,

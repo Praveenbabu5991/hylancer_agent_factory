@@ -73,19 +73,26 @@ MODELS: Dict[str, ModelConfig] = {
         cost_tier="premium",
         description="Advanced model for complex reasoning",
     ),
-    "gemini-2.0-flash-exp": ModelConfig(
-        model_id="gemini-2.0-flash-exp",
+    "gemini-2.0-flash-preview-image-generation": ModelConfig(
+        model_id="gemini-2.0-flash-preview-image-generation",
         provider=ModelProvider.GOOGLE,
         capabilities=[ModelCapability.TEXT, ModelCapability.IMAGE_GENERATION, ModelCapability.IMAGE_UNDERSTANDING],
         cost_tier="standard",
-        description="Experimental model with image generation",
+        description="Flash model with image generation (preview)",
+    ),
+    "gemini-2.5-flash-image": ModelConfig(
+        model_id="gemini-2.5-flash-image",
+        provider=ModelProvider.GOOGLE,
+        capabilities=[ModelCapability.TEXT, ModelCapability.IMAGE_GENERATION, ModelCapability.IMAGE_UNDERSTANDING],
+        cost_tier="standard",
+        description="Gemini 2.5 Flash with image generation (stable, cost-effective)",
     ),
     "gemini-3-pro-image-preview": ModelConfig(
         model_id="gemini-3-pro-image-preview",
         provider=ModelProvider.GOOGLE,
         capabilities=[ModelCapability.TEXT, ModelCapability.IMAGE_GENERATION, ModelCapability.IMAGE_UNDERSTANDING],
         cost_tier="premium",
-        description="Latest image generation model",
+        description="Latest image generation model (highest quality)",
     ),
     "veo-2.0-generate-001": ModelConfig(
         model_id="veo-2.0-generate-001",
@@ -148,8 +155,8 @@ DEFAULT_AGENT_MODELS = {
     "orchestrator": "gemini-2.5-flash",
     "idea": "gemini-2.5-flash",
     "writer": "gemini-2.5-flash",
-    "image": "gemini-2.0-flash-exp",
-    "edit": "gemini-2.0-flash-exp",
+    "image": "gemini-3-pro-image-preview",
+    "edit": "gemini-3-pro-image-preview",
     "campaign": "gemini-2.5-flash",
     "caption": "gemini-2.5-flash",
     "video": "veo-3.1-generate-preview",  # Veo 3.1 with audio support

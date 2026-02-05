@@ -14,7 +14,7 @@ load_dotenv()
 # =============================================================================
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini-2.5-flash")
-IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-2.0-flash-exp")
+IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-3-pro-image-preview")
 VIDEO_MODEL = os.getenv("VIDEO_MODEL", "veo-2.0-generate-001")
 
 # =============================================================================
