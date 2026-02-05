@@ -1,0 +1,82 @@
+# ============================================
+# Content Studio Agent - Docker Compose
+# For AWS EC2 t3.medium (2 vCPU, 4 GB RAM)
+# ============================================
+#
+# Usage:
+#   docker compose up -d          # Start
+#   docker compose logs -f        # View logs
+#   docker compose down           # Stop
+#   docker compose up -d --build  # Rebuild & start
+#
+
+services:
+  content-studio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: content-studio-agent
+    restart: unless-stopped
+
+    # Port mapping
+    ports:
+      - "${PORT:-5001}:${PORT:-5001}"
+
+    # Environment variables
+    env_file:
+      - .env
+
+    environment:
+      - HOST=0.0.0.0
+      - PORT=${PORT:-5001}
+      - DEBUG=false
+      # Gunicorn tuning for t3.medium
+      - GUNICORN_WORKERS=2
+      - GUNICORN_TIMEOUT=300
+      - GUNICORN_KEEPALIVE=5
+      - GUNICORN_MAX_REQUESTS=1000
+      - GUNICORN_MAX_REQUESTS_JITTER=50
+
+    # Persistent volumes
+    volumes:
+      - content_generated:/app/generated
+      - content_uploads:/app/uploads
+      - content_data:/app/data
+      - content_logs:/app/logs
+
+    # Resource limits for t3.medium (2 vCPU, 4 GB RAM)
+    # Leave ~512 MB for OS + Docker overhead
+    deploy:
+      resources:
+        limits:
+          cpus: "1.8"
+          memory: 3584M
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-5001}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+# Named volumes for data persistence
+volumes:
+  content_generated:
+    driver: local
+  content_uploads:
+    driver: local
+  content_data:
+    driver: local
+  content_logs:
+    driver: local

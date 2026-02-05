@@ -1,0 +1,57 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Environment (secrets - must be passed via env_file or env vars)
+.env
+.env.*
+*.env
+
+# Generated content (use volumes instead)
+generated/
+uploads/
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+docker-compose.yml
+docker-compose.*.yml
+
+# Logs
+*.log
+logs/
+
+# Claude
+.claude/
+
+# Docs (not needed in container)
+README.md
+docs/
+
+# Development
+Makefile
+tests/
+*.test.py
