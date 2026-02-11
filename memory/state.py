@@ -56,6 +56,12 @@ class WorkflowState(Enum):
     CAROUSEL_GENERATING = "carousel_gen"
     CAROUSEL_COMPLETE = "carousel_complete"
 
+    # Video content flow
+    VIDEO_TYPE_SELECTION = "video_type_selection"
+    VIDEO_DETAILS_GATHERING = "video_details"
+    VIDEO_GENERATING = "video_generating"
+    VIDEO_COMPLETE = "video_complete"
+
     # Common
     COMPLETE = "complete"
     ERROR = "error"
@@ -342,6 +348,7 @@ class StateTransitions:
             WorkflowState.GENERAL_IMAGE_PROMPT,   # General Image (quick path)
             WorkflowState.CAMPAIGN_SETUP,         # Campaign
             WorkflowState.CAROUSEL_SETUP,         # Carousel
+            WorkflowState.VIDEO_TYPE_SELECTION,   # Video Content
             WorkflowState.IDEA_REQUEST,           # Legacy support
         ],
 
@@ -403,6 +410,12 @@ class StateTransitions:
         WorkflowState.CAROUSEL_SETUP: [WorkflowState.CAROUSEL_GENERATING],
         WorkflowState.CAROUSEL_GENERATING: [WorkflowState.CAROUSEL_COMPLETE],
         WorkflowState.CAROUSEL_COMPLETE: [WorkflowState.COMPLETE, WorkflowState.MODE_SELECTION],
+
+        # Video content flow
+        WorkflowState.VIDEO_TYPE_SELECTION: [WorkflowState.VIDEO_DETAILS_GATHERING],
+        WorkflowState.VIDEO_DETAILS_GATHERING: [WorkflowState.VIDEO_GENERATING],
+        WorkflowState.VIDEO_GENERATING: [WorkflowState.VIDEO_COMPLETE],
+        WorkflowState.VIDEO_COMPLETE: [WorkflowState.COMPLETE, WorkflowState.MODE_SELECTION, WorkflowState.VIDEO_TYPE_SELECTION],
 
         WorkflowState.COMPLETE: [WorkflowState.MODE_SELECTION],
         WorkflowState.ERROR: [WorkflowState.MODE_SELECTION, WorkflowState.START],

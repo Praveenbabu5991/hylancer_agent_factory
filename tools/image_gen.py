@@ -545,6 +545,230 @@ def generate_complete_post(
     return result
 
 
+def generate_product_showcase(
+    product_image_path: str,
+    product_name: str,
+    product_features: str = "",
+    brand_name: str = "",
+    brand_colors: str = "",
+    industry: str = "",
+    target_audience: str = "",
+    launch_context: str = "",
+    price_point: str = "",
+    style: str = "creative",
+    logo_path: str = "",
+    output_dir: str = "generated",
+    showcase_style: str = "lifestyle",
+    headline_text: str = "",
+    cta_text: str = "Shop Now"
+) -> dict:
+    """
+    Generate a product showcase post featuring an uploaded product image.
+
+    Creates a professional product post that incorporates the user's actual
+    product image into a marketing-ready social media post.
+
+    Args:
+        product_image_path: Path to the uploaded product image
+        product_name: Name of the product being showcased
+        product_features: Key features/selling points (comma-separated)
+        brand_name: Name of the brand/company
+        brand_colors: Comma-separated brand colors (hex codes)
+        industry: Brand's industry (fashion, tech, food, etc.)
+        target_audience: Who the product is for
+        launch_context: Context like "New Launch", "Summer Collection", "Limited Edition"
+        price_point: Price or pricing tier ("$49", "Premium", etc.)
+        style: Visual style (creative, professional, playful, minimal, bold)
+        logo_path: Path to logo image
+        output_dir: Directory to save generated images
+        showcase_style: "lifestyle" (in-use), "studio" (clean shot), "flatlay" (top-down)
+        headline_text: Main headline (defaults to product name)
+        cta_text: Call-to-action text
+
+    Returns:
+        Dictionary with product post including image, caption, and hashtags
+    """
+    from tools.content import write_caption, generate_hashtags
+
+    print(f"🛍️ Generating product showcase for: {product_name}")
+    print(f"   Product image: {product_image_path}")
+    print(f"   Style: {showcase_style}, Brand: {brand_name}")
+
+    # Resolve product image path
+    resolved_product_path = product_image_path
+    if product_image_path.startswith("/uploads/"):
+        project_root = Path(__file__).parent.parent
+        resolved_product_path = str(project_root / product_image_path.lstrip("/"))
+    elif product_image_path.startswith("/generated/"):
+        project_root = Path(__file__).parent.parent
+        resolved_product_path = str(project_root / product_image_path.lstrip("/"))
+    elif not os.path.isabs(product_image_path):
+        project_root = Path(__file__).parent.parent
+        resolved_product_path = str(project_root / product_image_path)
+
+    if not os.path.exists(resolved_product_path):
+        return {
+            "status": "error",
+            "message": f"Product image not found: {product_image_path}"
+        }
+
+    # Build showcase-specific prompts
+    showcase_prompts = {
+        "lifestyle": f"""Create a lifestyle marketing image featuring this product.
+Show the product being used or worn by a person in a natural, aspirational setting.
+The product should be the hero of the image, clearly visible and highlighted.
+Professional photography quality with natural lighting.""",
+
+        "studio": f"""Create a clean, professional studio product shot.
+Feature this product on a clean background with professional lighting.
+The product should be perfectly lit with subtle shadows for depth.
+High-end commercial photography style, perfect for e-commerce.""",
+
+        "flatlay": f"""Create a stylish flatlay (top-down) product arrangement.
+Feature this product as the centerpiece with complementary props.
+Clean, organized layout with aesthetic appeal.
+Instagram-worthy flatlay photography style."""
+    }
+
+    base_prompt = showcase_prompts.get(showcase_style, showcase_prompts["lifestyle"])
+
+    # Build the full prompt
+    prompt_parts = [
+        base_prompt,
+        "",
+        f"PRODUCT: {product_name}",
+    ]
+
+    if product_features:
+        prompt_parts.append(f"KEY FEATURES: {product_features}")
+    if industry:
+        prompt_parts.append(f"INDUSTRY: {industry}")
+    if launch_context:
+        prompt_parts.append(f"CONTEXT: {launch_context}")
+
+    prompt_parts.extend([
+        "",
+        "REQUIREMENTS:",
+        "- The uploaded product must be the HERO of the image",
+        "- Product should be clearly visible and recognizable",
+        "- Maintain product accuracy - don't alter the actual product",
+        "- Create an aspirational, marketing-ready image",
+        "- High quality suitable for Instagram/social media",
+    ])
+
+    if brand_colors:
+        prompt_parts.append(f"- Incorporate brand colors: {brand_colors}")
+
+    full_prompt = "\n".join(prompt_parts)
+
+    # Use the headline or product name
+    display_headline = headline_text or product_name
+
+    # Generate the image with product focus
+    user_image_instructions = f"[PRODUCT_FOCUS] {product_image_path}"
+
+    image_result = generate_post_image(
+        prompt=full_prompt,
+        brand_name=brand_name,
+        brand_colors=brand_colors,
+        style=style,
+        logo_path=logo_path,
+        output_dir=output_dir,
+        industry=industry,
+        occasion=launch_context,
+        headline_text=display_headline,
+        cta_text=cta_text,
+        user_images=product_image_path,
+        user_image_instructions=user_image_instructions
+    )
+
+    if image_result.get("status") != "success":
+        return image_result
+
+    # Generate product-focused caption
+    caption_topic = f"Product launch: {product_name}"
+    if launch_context:
+        caption_topic = f"{launch_context}: {product_name}"
+
+    key_message = product_name
+    if product_features:
+        features_list = [f.strip() for f in product_features.split(",")][:3]
+        key_message = f"{product_name} - {', '.join(features_list)}"
+
+    caption_result = write_caption(
+        topic=caption_topic,
+        brand_voice="enthusiastic and product-focused",
+        target_audience=target_audience or "shoppers and brand enthusiasts",
+        key_message=key_message,
+        occasion=launch_context,
+        tone="engaging",
+        include_cta=True,
+        emoji_level="moderate",
+        company_overview=f"{brand_name} - {industry}" if brand_name else "",
+        brand_name=brand_name,
+        image_description=f"Product showcase of {product_name}"
+    )
+
+    # Add price point to caption if provided
+    caption = caption_result.get("caption", f"Introducing {product_name}! {cta_text}")
+    if price_point and caption_result.get("status") == "success":
+        # Insert price before the CTA
+        if cta_text.lower() in caption.lower():
+            caption = caption.replace(cta_text, f"{price_point} | {cta_text}")
+
+    # Generate product-focused hashtags
+    hashtag_result = generate_hashtags(
+        topic=f"{product_name} {industry} product launch",
+        niche=industry,
+        brand_name=brand_name,
+        trending_context=launch_context or "new product",
+        max_hashtags=15
+    )
+
+    # Combine results
+    result = {
+        "status": "success",
+        "image": image_result,
+        "image_path": image_result.get("image_path"),
+        "image_url": image_result.get("url"),
+        "product_name": product_name,
+        "product_features": product_features,
+        "showcase_style": showcase_style,
+        "type": "product_showcase"
+    }
+
+    # Add caption
+    if caption_result.get("status") == "success":
+        result["caption"] = caption
+        result["caption_length"] = len(caption)
+    else:
+        result["caption"] = f"✨ Introducing {product_name}!\n\n{product_features}\n\n{cta_text}"
+        result["caption_error"] = caption_result.get("message")
+
+    # Add hashtags
+    if hashtag_result.get("status") == "success":
+        result["hashtags"] = hashtag_result.get("hashtags")
+        result["hashtag_string"] = hashtag_result.get("hashtag_string")
+    else:
+        result["hashtags"] = [f"#{brand_name.replace(' ', '')}" if brand_name else "#newproduct", "#shopnow"]
+        result["hashtag_string"] = " ".join(result["hashtags"])
+        result["hashtag_error"] = hashtag_result.get("message")
+
+    # Create full post text
+    full_post = result["caption"]
+    if result.get("hashtag_string"):
+        full_post += f"\n\n.\n.\n.\n\n{result['hashtag_string']}"
+    result["full_post"] = full_post
+
+    print(f"   ✅ Product showcase generated!")
+    print(f"   🛍️ Product: {product_name}")
+    print(f"   📷 Image: {result.get('image_path')}")
+    print(f"   📝 Caption: {len(result.get('caption', ''))} chars")
+    print(f"   #️⃣ Hashtags: {len(result.get('hashtags', []))}")
+
+    return result
+
+
 def regenerate_post(
     original_image_path: str,
     edit_instruction: str,
@@ -827,7 +1051,6 @@ GUIDELINES:
                 aspect_ratio=aspect_ratio,
                 number_of_videos=1,
                 duration_seconds=duration_seconds,
-                person_generation="ALLOW_ADULT",
             )
 
             # Step 3: Generate video with image input

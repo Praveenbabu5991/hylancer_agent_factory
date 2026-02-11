@@ -23,6 +23,7 @@ from agents.image_agent import image_post_agent
 from agents.caption_agent import caption_agent
 from agents.edit_agent import edit_agent
 from agents.animation_agent import animation_agent
+from agents.video_agent import video_agent
 from agents.campaign_agent import campaign_agent
 from agents.writer_agent import writer_agent
 print("✅ Sub-agents imported")
@@ -57,6 +58,7 @@ root_agent = LlmAgent(
         caption_agent,
         edit_agent,
         animation_agent,
+        video_agent,
         campaign_agent,
     ],
     tools=[
