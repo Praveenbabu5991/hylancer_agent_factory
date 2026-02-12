@@ -22,6 +22,8 @@ class ContentStudioApp {
             companyName: '',
             industry: '',
             companyOverview: '',
+            targetAudience: '',  // Who is the brand marketing to
+            productsServices: '',  // What products/services does the brand offer
             instagramLink: '',
             tone: 'creative',
             logoPath: null,
@@ -69,7 +71,8 @@ class ContentStudioApp {
                 logo: '/static/presets/socialbunkr-logo.jpeg',
                 logoFullPath: null,
                 colors: { dominant: '#FF6B35', palette: ['#FF6B35', '#F7C59F', '#2EC4B6', '#011627', '#FDFFFC'] },
-                referenceImages: [] // Will be loaded from server
+                referenceImages: [], // Will be loaded from server
+                userImages: [{ path: '/static/presets/socialbunkr-refs/stay.jpeg', usage_intent: 'product_focus' }]
             },
             hylancer: {
                 name: 'Hylancer',
@@ -155,6 +158,8 @@ class ContentStudioApp {
         this.companyNameInput = document.getElementById('companyName');
         this.industrySelect = document.getElementById('industry');
         this.companyOverviewInput = document.getElementById('companyOverview');
+        this.targetAudienceInput = document.getElementById('targetAudience');
+        this.productsServicesInput = document.getElementById('productsServices');
         this.instagramLinkInput = document.getElementById('instagramLink');
         this.scrapeInstagramBtn = document.getElementById('scrapeInstagramBtn');
         this.scrapedImagesPreview = document.getElementById('scrapedImagesPreview');
@@ -554,6 +559,24 @@ class ContentStudioApp {
         } else {
             this.brandConfig.referenceImages = [];
             this.renderReferencePreviews();
+        }
+
+        // Load preset user images if available (for product/post images)
+        if (preset.userImages && preset.userImages.length > 0) {
+            this.brandConfig.userImages = preset.userImages.map((img, index) => ({
+                id: `preset-user-${index}`,
+                dataUrl: img.path,
+                fullPath: img.path,
+                path: img.path,
+                usage_intent: img.usage_intent || 'product_focus',
+                uploading: false,
+                isPreset: true
+            }));
+            this.renderUserImagesPreviews();
+            console.log(`Loaded ${preset.userImages.length} user images for ${presetId}`);
+        } else {
+            this.brandConfig.userImages = [];
+            this.renderUserImagesPreviews();
         }
         
         // Deselect palette options
@@ -1120,15 +1143,19 @@ class ContentStudioApp {
         this.brandConfig.companyName = this.companyNameInput.value;
         this.brandConfig.industry = this.industrySelect.value;
         this.brandConfig.companyOverview = this.companyOverviewInput?.value || '';
+        this.brandConfig.targetAudience = this.targetAudienceInput?.value || '';
+        this.brandConfig.productsServices = this.productsServicesInput?.value || '';
         this.brandConfig.instagramLink = this.instagramLinkInput?.value || '';
         this.brandConfig.tone = document.querySelector('input[name="tone"]:checked')?.value || 'creative';
         this.brandConfig.numImages = parseInt(this.numImagesSlider?.value || 1);
-        
+
         // Build context message parts
         const parts = [];
         if (this.brandConfig.companyName) parts.push(this.brandConfig.companyName);
         if (this.brandConfig.industry) parts.push(`(${this.brandConfig.industry})`);
         if (this.brandConfig.companyOverview) parts.push('Overview: ✓');
+        if (this.brandConfig.targetAudience) parts.push('Target Audience: ✓');
+        if (this.brandConfig.productsServices) parts.push('Products: ✓');
         if (this.brandConfig.logoPath) parts.push('Logo: ✓');
         if (this.brandConfig.brandColors) parts.push(`Colors: ${this.brandConfig.brandColors.dominant}`);
         parts.push(`Style: ${this.brandConfig.tone}`);
@@ -1153,9 +1180,17 @@ class ContentStudioApp {
 - Industry: ${this.brandConfig.industry || 'General'}
 - Tone: ${this.brandConfig.tone || 'creative'}
 - Number of images to generate: ${this.brandConfig.numImages}`;
-        
+
         if (this.brandConfig.companyOverview) {
             brandInfo += `\n- Company Overview: ${this.brandConfig.companyOverview}`;
+        }
+
+        if (this.brandConfig.targetAudience) {
+            brandInfo += `\n- TARGET AUDIENCE: ${this.brandConfig.targetAudience}`;
+        }
+
+        if (this.brandConfig.productsServices) {
+            brandInfo += `\n- PRODUCTS/SERVICES: ${this.brandConfig.productsServices}`;
         }
         
         if (this.brandConfig.brandColors) {
@@ -1229,7 +1264,23 @@ class ContentStudioApp {
                 content: this.brandConfig.companyOverview
             });
         }
-        
+
+        // Add target audience
+        if (this.brandConfig.targetAudience) {
+            attachments.push({
+                type: 'target_audience',
+                content: this.brandConfig.targetAudience
+            });
+        }
+
+        // Add products/services
+        if (this.brandConfig.productsServices) {
+            attachments.push({
+                type: 'products_services',
+                content: this.brandConfig.productsServices
+            });
+        }
+
         // Add scraped brand info
         if (this.brandConfig.scrapedBrandInfo) {
             attachments.push({
@@ -1334,6 +1385,12 @@ class ContentStudioApp {
             fullMessage += `\n\n[Current brand context: ${this.brandConfig.companyName || 'Brand'}, Industry: ${this.brandConfig.industry || 'General'}, Tone: ${this.brandConfig.tone || 'creative'}, Colors: ${this.brandConfig.brandColors?.dominant || 'not set'}, Number of images to generate: ${this.brandConfig.numImages}]`;
             if (this.brandConfig.companyOverview) {
                 fullMessage += `\n[Company Overview: ${this.brandConfig.companyOverview}]`;
+            }
+            if (this.brandConfig.targetAudience) {
+                fullMessage += `\n[TARGET AUDIENCE: ${this.brandConfig.targetAudience}]`;
+            }
+            if (this.brandConfig.productsServices) {
+                fullMessage += `\n[PRODUCTS/SERVICES: ${this.brandConfig.productsServices}]`;
             }
         }
         
