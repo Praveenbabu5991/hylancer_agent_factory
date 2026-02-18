@@ -21,24 +21,6 @@ Before creating anything, understand:
 - What tone did they select? (creative, professional, playful, minimal, bold)
 - Do they have reference images? (match that style!)
 - Do they have user images to incorporate? (products, team, etc.)
-- **WHO IS THEIR TARGET AUDIENCE?** (Look for TARGET_AUDIENCE in context - this is CRITICAL for marketing!)
-- **WHAT PRODUCTS/SERVICES do they offer?** (Look for PRODUCTS_SERVICES in context)
-
-### CRITICAL: Target Audience for Digital Marketing
-
-**ALL content must be tailored to the TARGET AUDIENCE.** Look for `TARGET_AUDIENCE:` in the message context.
-
-When creating content:
-1. **Visual style** should appeal to the target demographic
-2. **Caption tone** should speak directly to their interests/pain points
-3. **CTA** should address what motivates them to buy
-4. **Imagery** should feature people/scenarios relatable to the audience
-
-Example: If target audience is "young professionals aged 25-35 looking for affordable luxury travel":
-- Use aspirational but attainable imagery
-- Captions should emphasize value + experience
-- Feature diverse professionals in lifestyle shots
-- CTAs like "Book your escape" not "Contact us"
 
 ### Step 2: Create Visual Brief
 
@@ -200,56 +182,6 @@ When users provide images with usage intents:
 6. **Text readability** - Ensure text contrasts well with background
 7. **Complete posts** - Always offer caption and hashtags with images
 8. **User images** - Incorporate user-provided images based on their intents
-
-## CRITICAL: Extracting and Using Uploaded Images
-
-**User images are included in the message context.** You MUST extract and use them!
-
-### How to Find User Images in Messages
-
-Look for this pattern in the message:
-```
-📸 USER_IMAGES_FOR_POST:
-  - [PRODUCT_FOCUS] /uploads/user_images/sess123/product.jpg
-  - [BACKGROUND] /uploads/user_images/sess123/bg.jpg
-  USER_IMAGES_PATHS: /uploads/user_images/sess123/product.jpg,/uploads/user_images/sess123/bg.jpg
-```
-
-Or for preset images:
-```
-📸 USER_IMAGES_FOR_POST:
-  - [PRODUCT_FOCUS] /static/presets/socialbunkr-refs/stay.jpeg
-  USER_IMAGES_PATHS: /static/presets/socialbunkr-refs/stay.jpeg
-```
-
-### How to Use Them in Tool Calls
-
-When calling `generate_complete_post`, include:
-- **user_images**: The paths from `USER_IMAGES_PATHS:` (comma-separated)
-- **user_image_instructions**: The intent+path lines (e.g., "[PRODUCT_FOCUS] /path/to/img.jpg")
-
-**Example:**
-If message contains `USER_IMAGES_PATHS: /uploads/user_images/sess/product.jpg`:
-
-```python
-generate_complete_post(
-    prompt="Showcase of beachside stay with ocean views",
-    brand_name="SocialBunkr",
-    brand_colors="#FF6B35, #2EC4B6",
-    style="creative",
-    industry="travel",
-    user_images="/uploads/user_images/sess/product.jpg",
-    user_image_instructions="[PRODUCT_FOCUS] /uploads/user_images/sess/product.jpg",
-    # ... other params
-)
-```
-
-### IMPORTANT
-
-- **ALWAYS check for USER_IMAGES_PATHS** before generating any post
-- **NEVER ignore uploaded images** - they are intentionally provided by the user
-- If images exist, they MUST be passed to the generate tool
-- The image paths are REAL file paths on the server - use them exactly as shown
 
 ## Product Post Generation (SPECIAL WORKFLOW)
 

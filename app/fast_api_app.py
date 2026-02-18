@@ -653,10 +653,6 @@ async def chat_stream(request: ChatRequest):
                     attachment_context += f"\n  USER_IMAGES_PATHS: {','.join(all_paths)}"
             elif att.get("type") == "company_overview":
                 attachment_context += f"\n📋 COMPANY_OVERVIEW: {att.get('content', '')}"
-            elif att.get("type") == "target_audience":
-                attachment_context += f"\n👥 TARGET_AUDIENCE: {att.get('content', '')}"
-            elif att.get("type") == "products_services":
-                attachment_context += f"\n🛍️ PRODUCTS_SERVICES: {att.get('content', '')}"
         message_text = message_text + attachment_context
     
     user_message = types.Content(
